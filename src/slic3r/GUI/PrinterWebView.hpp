@@ -25,6 +25,8 @@
 #include <wx/tbarbase.h>
 #include "wx/textctrl.h"
 #include <wx/timer.h>
+#include <wx/button.h>
+#include <wx/sizer.h>
 
 
 namespace Slic3r {
@@ -49,12 +51,25 @@ public:
     void sendMessage(const std::string& msg);
     wxWebView* get_browser() const { return m_browser; }
 
+    // AFC lane panel beside the device page, for printers running AFC.
+    void show_afc_panel(bool show);
+
 private:
     void SendAPIKey();
+    void OnAfcTimer(wxTimerEvent& evt);
+    void OnAfcScriptMessage(wxWebViewEvent& evt);
+    void ensure_afc_browser();
+    void update_afc_layout();
 
     wxWebView* m_browser;
     long m_zoomFactor;
     wxString m_apikey;
+
+    wxBoxSizer* m_main_sizer{nullptr};
+    wxWebView*  m_afc_browser{nullptr};
+    wxButton*   m_afc_toggle{nullptr};
+    wxTimer     m_afc_timer;
+    bool        m_afc_detected{false};
 
     // DECLARE_EVENT_TABLE()
 };

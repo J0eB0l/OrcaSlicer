@@ -15,6 +15,7 @@
 #include "slic3r/GUI/WebPresetDialog.hpp"
 
 #include "slic3r/GUI/SSWCP.hpp"
+#include "slic3r/GUI/AFCManager.hpp"
 #include "slic3r/GUI/DownloadManager.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Config/Version.hpp"
@@ -7934,6 +7935,7 @@ bool GUI_App::sm_disconnect_current_machine(bool need_reload_printerview)
             wxGetApp().set_connect_host(nullptr);
 
             wxGetApp().preset_bundle->machine_filaments.clear();
+            AFCManager::instance().clear();
             // wxGetApp().load_current_presets();
 
         });

@@ -1708,6 +1708,21 @@ void Moonraker_Mqtt::async_send_gcodes(const std::vector<std::string>& scripts, 
     }
 }
 
+// Generic JSON-RPC call over the MQTT bridge, used by the AFC integration
+// (printer.afc.status, printer.objects.*, server.database.get_item).
+void Moonraker_Mqtt::async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback)
+{
+    BOOST_LOG_TRIVIAL(info) << "[Moonraker_Mqtt] JSON-RPC call: " << method;
+    if (!send_to_request(method, params.is_null() ? json::object() : params, true, callback, [callback, method]() {
+            BOOST_LOG_TRIVIAL(warning) << "[Moonraker_Mqtt] JSON-RPC call timed out: " << method;
+            if (callback)
+                callback(json{{"error", "timeout"}});
+        }) && callback) {
+        BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to send JSON-RPC call: " << method;
+        callback(json{{"error", "send failed"}});
+    }
+}
+
 // Unsubscribe from printer status updates
 void Moonraker_Mqtt::async_unsubscribe_machine_info(const std::string& hash, std::function<void(const nlohmann::json&)> callback)
 {

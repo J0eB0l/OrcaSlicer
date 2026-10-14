@@ -566,6 +566,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/SMPhysicalPrinterDialog.cpp
     GUI/SSWCP.cpp
     GUI/SSWCP.hpp
+    GUI/AFCManager.cpp
+    GUI/AFCManager.hpp
+    GUI/AFCWebBridge.cpp
+    GUI/AFCWebBridge.hpp
+    GUI/AFCPrintDialog.cpp
+    GUI/AFCPrintDialog.hpp
     GUI/WebSocketDebugServer.cpp
     GUI/WebSocketDebugServer.hpp
     GUI/DownloadManager.cpp

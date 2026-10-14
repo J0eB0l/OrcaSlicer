@@ -441,6 +441,8 @@ set(lisbslic3r_sources
     SVG.cpp
     SSWCPProtocol.cpp
     SSWCPProtocol.hpp
+    AFCProtocol.cpp
+    AFCProtocol.hpp
     SVG.hpp
     Technologies.hpp
     Tesselate.cpp

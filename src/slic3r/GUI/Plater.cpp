@@ -200,6 +200,8 @@
 #include "StepMeshDialog.hpp"
 #include "CloneDialog.hpp"
 #include "WebPreprintDialog.hpp"
+#include "AFCManager.hpp"
+#include "AFCPrintDialog.hpp"
 
 #include "filamentsync/SyncConfirmDialog.hpp"
 #include "filamentsync/SyncFilamentColorDialog.hpp"
@@ -9343,6 +9345,13 @@ void Sidebar::show_sync_filament_dialog()
     PresetBundle* preset_bundle = wxGetApp().preset_bundle;
     if (!preset_bundle)
         return;
+
+    // AFC: read the lanes fresh so the sync offers one slot per AFC T(n).
+    if (host) {
+        wxBusyCursor busy;
+        if (AFCManager::instance().refresh_blocking(host, 4000))
+            AFCManager::instance().reapply_machine_filaments(*preset_bundle);
+    }
 
     std::vector<FilamentData> machineFilamentList;
     build_machine_filament_list(preset_bundle, machineFilamentList);
@@ -21750,6 +21759,23 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.group       = dlg.group();
         upload_job.upload_data.storage     = dlg.storage();
 
+
+        // AFC: map every project filament to an AFC lane before the Snapmaker
+        // print dialog, which only knows the four toolheads.
+        if (dlg.post_action() != PrintHostPostUploadAction::None) {
+            std::shared_ptr<PrintHost> afc_host;
+            wxGetApp().get_connect_host(afc_host);
+            bool afc_present = false;
+            if (afc_host) {
+                wxBusyCursor busy;
+                afc_present = AFCManager::instance().refresh_blocking(afc_host, 4000);
+            }
+            if (afc_present) {
+                AFCPrintDialog afc_dialog(this);
+                if (!afc_dialog.run())
+                    return;
+            }
+        }
 
         WebPreprintDialog* dialog = new WebPreprintDialog();
         dialog->set_swtich_to_device(dlg.switch_to_device_tab());
