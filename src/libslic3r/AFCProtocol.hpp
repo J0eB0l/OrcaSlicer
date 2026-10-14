@@ -168,6 +168,7 @@ struct ToolSlot
     std::string              color;           ///< "#RRGGBB"
     std::vector<std::string> colors;
     int                      extruder_index{-1};
+    double                   flow_k{-1};      ///< the spool's saved pressure advance, -1 when none
 };
 
 /// Slots T0..T(max_tool), contiguous; unmapped or empty tools get NONE.
@@ -176,6 +177,14 @@ std::vector<ToolSlot> tool_slots(const Snapshot &snapshot);
 /// The same display name the U1 sync builds from print_task_config:
 /// "<vendor> <type>[ <sub_type>]", or "<vendor> Support For <type>".
 std::string filament_display_name(const std::string &vendor, const std::string &type, const std::string &sub_type);
+
+/// Put each filament slot's spool pressure advance (`spool`, one value per
+/// slot, -1 = keep the filament preset's) into a composed config's
+/// pressure_advance and enable_pressure_advance vectors. Every flow variant of
+/// a slot gets it: slot i owns `step_sizes[i]` entries (1 when missing), after
+/// the entries of the slots before it. Returns whether any value changed.
+bool apply_spool_pressure_advance(const std::vector<double> &spool, const std::vector<int> &step_sizes,
+                                  std::vector<double> &pressure_advance, std::vector<unsigned char> &enable);
 
 /// True for names AFC accepts as a lane (letters, digits, '_' and '-').
 bool is_safe_lane_name(const std::string &name);

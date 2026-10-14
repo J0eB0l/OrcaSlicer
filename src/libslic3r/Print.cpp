@@ -560,6 +560,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "before_layer_change_gcode",
         "enable_pressure_advance",
         "pressure_advance",
+        "spool_pressure_advance",
         "enable_overhang_bridge_fan",
         "overhang_fan_speed",
         "overhang_fan_threshold",

@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
@@ -46,8 +47,9 @@ public:
     // Read AFC from the connected printer. `done` runs on the network thread.
     void refresh_async(const std::shared_ptr<PrintHost> &host, Callback done = nullptr);
 
-    // Same, waiting at most `timeout_ms`. Safe on the UI thread: replies
-    // arrive on the MQTT thread. Returns whether AFC is present.
+    // Same, waiting at most `timeout_ms`, flow K reads of the linked spools
+    // included. Safe on the UI thread: replies arrive on the MQTT thread.
+    // Returns whether AFC is present.
     bool refresh_blocking(const std::shared_ptr<PrintHost> &host, int timeout_ms = 4000);
 
     // Refresh in the background unless the snapshot is younger than `max_age`.
@@ -108,6 +110,7 @@ private:
     std::string                             m_applied_key;    // UI thread: slots last applied
     std::map<int, FlowK>                    m_flow_k;         // by Spoolman spool id, for the printer in m_sn
     std::set<int>                           m_flow_k_reading; // spool ids with a read on the way
+    std::condition_variable                 m_flow_k_read;    // a flow K read finished
 };
 
 } // namespace GUI

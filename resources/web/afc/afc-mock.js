@@ -62,12 +62,12 @@
   const project = {
     sliced: true,
     filaments: [
-      { id: 0, color: '#F2F2F2', type: 'PLA', grams: 38.2, used: true, preset: 'Polymaker PolyLite PLA' },
-      { id: 1, color: '#2B4BA8', type: 'PLA', grams: 72.9, used: true, preset: 'Bambu PLA Basic' },
-      { id: 2, color: '#C8102E', type: 'PLA', grams: 104.5, used: true, preset: 'Generic PLA' },
-      { id: 3, color: '#FF7A1A', type: 'ABS', grams: 16.1, used: true, preset: 'Bambu ABS' },
-      { id: 4, color: '#2ECC71', type: 'PETG', grams: 22.0, used: true, preset: 'Generic PETG' },
-      { id: 5, color: '#FFFFFF', type: 'PLA', grams: 0, used: false, preset: 'Generic PLA' },
+      { id: 0, color: '#F2F2F2', type: 'PLA', grams: 38.2, used: true, preset: 'Polymaker PolyLite PLA', spool_pa: 0.03 },
+      { id: 1, color: '#2B4BA8', type: 'PLA', grams: 72.9, used: true, preset: 'Bambu PLA Basic', spool_pa: -1 },
+      { id: 2, color: '#C8102E', type: 'PLA', grams: 104.5, used: true, preset: 'Generic PLA', spool_pa: -1 },
+      { id: 3, color: '#FF7A1A', type: 'ABS', grams: 16.1, used: true, preset: 'Bambu ABS', spool_pa: -1 },
+      { id: 4, color: '#2ECC71', type: 'PETG', grams: 22.0, used: true, preset: 'Generic PETG', spool_pa: -1 },
+      { id: 5, color: '#FFFFFF', type: 'PLA', grams: 0, used: false, preset: 'Generic PLA', spool_pa: -1 },
     ],
     suggestion: ['lane0', 'lane12', 'lane2', 'lane13', 'lane4', ''],
   };

@@ -424,3 +424,52 @@ TEST_CASE("lanes carry flow K to the page only when the spool has one", "[AFCPro
     CHECK_THAT(j["lanes"][0]["flow_k"].get<double>(), WithinAbs(0.032, 1e-9));
     CHECK(j["lanes"][1]["flow_k"].is_null());
 }
+
+TEST_CASE("a slot's spool pressure advance replaces its preset value", "[AFCProtocol]")
+{
+    std::vector<double>        pa     = {0.02, 0.04, 0.05};
+    std::vector<unsigned char> enable = {0, 1, 0};
+
+    SECTION("one entry per slot") {
+        CHECK(AFCProtocol::apply_spool_pressure_advance({0.032, -1, 0.028}, {}, pa, enable));
+        CHECK_THAT(pa[0], WithinAbs(0.032, 1e-9));
+        CHECK_THAT(pa[1], WithinAbs(0.04, 1e-9));
+        CHECK_THAT(pa[2], WithinAbs(0.028, 1e-9));
+        CHECK(enable == std::vector<unsigned char>{1, 1, 1});
+    }
+    SECTION("every flow variant of a slot") {
+        // Slot 0 declares standard and high flow, slot 1 only standard.
+        CHECK(AFCProtocol::apply_spool_pressure_advance({0.032, 0.021}, {2, 1}, pa, enable));
+        CHECK_THAT(pa[0], WithinAbs(0.032, 1e-9));
+        CHECK_THAT(pa[1], WithinAbs(0.032, 1e-9));
+        CHECK_THAT(pa[2], WithinAbs(0.021, 1e-9));
+        CHECK(enable == std::vector<unsigned char>{1, 1, 1});
+    }
+    SECTION("no spool values change nothing") {
+        CHECK_FALSE(AFCProtocol::apply_spool_pressure_advance({-1, -1, -1}, {}, pa, enable));
+        CHECK_FALSE(AFCProtocol::apply_spool_pressure_advance({}, {}, pa, enable));
+        CHECK(enable == std::vector<unsigned char>{0, 1, 0});
+    }
+    SECTION("more spool values than slots stay inside the vectors") {
+        CHECK_FALSE(AFCProtocol::apply_spool_pressure_advance({-1, -1, -1, 0.03, 0.03}, {}, pa, enable));
+        CHECK(pa.size() == 3);
+        CHECK_THAT(pa[0], WithinAbs(0.02, 1e-9));
+    }
+}
+
+TEST_CASE("tool slots carry the lane's flow K", "[AFCProtocol]")
+{
+    json afc;
+    afc["Turtle_1"]["system"] = {{"type", "Box_Turtle"}};
+    afc["Turtle_1"]["lane1"]  = lane_status("lane1", "Turtle_1", 1, {"T0"}, "extruder", "#FF0000", "PLA", true);
+    afc["Turtle_1"]["lane2"]  = lane_status("lane2", "Turtle_1", 2, {"T1"}, "extruder", "#00FF00", "PETG", true);
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(json{{"status:", {{"AFC", afc}}}}, s));
+    for (AFCProtocol::Lane &l : s.lanes)
+        if (l.name == "lane1")
+            l.flow_k = 0.032;
+    const auto slots = AFCProtocol::tool_slots(s);
+    REQUIRE(slots.size() == 2);
+    CHECK_THAT(slots[0].flow_k, WithinAbs(0.032, 1e-9));
+    CHECK(slots[1].flow_k == -1);
+}

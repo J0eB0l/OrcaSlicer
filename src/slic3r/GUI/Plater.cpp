@@ -9433,11 +9433,23 @@ void Sidebar::show_sync_filament_dialog()
         ConfigOptionStrings* mco = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors");
         ConfigOptionInts*    cmo = preset_bundle->project_config.option<ConfigOptionInts>("filament_colour_mode");
 
+        // AFC: the pressure advance saved on each lane's spool, by the T(n) the slot was synced from.
+        std::map<int, double> spool_flow_k;
+        if (afc_sync)
+            for (const AFCProtocol::ToolSlot &slot : AFCProtocol::tool_slots(AFCManager::instance().snapshot()))
+                spool_flow_k[slot.tool] = slot.has_filament ? slot.flow_k : -1.;
+        int spool_pa_slots = 0;
+
         for (size_t i = 0; i < effective_size; ++i) {
             Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type);
             if (matched) {
                 preset_bundle->set_filament_preset(i, matched->name);
             }
+            // A sync replaces the slot's spool, so a K from an earlier sync never stays behind.
+            auto k = spool_flow_k.find(int(syncedData[i].m_index));
+            preset_bundle->set_spool_pressure_advance(i, k != spool_flow_k.end() ? k->second : -1.);
+            if (preset_bundle->spool_pressure_advance(i) >= 0)
+                ++spool_pa_slots;
 
             if (co && i < co->values.size()) {
                 wxColour c = getMainColor(syncedData[i].m_color);
@@ -9478,10 +9490,13 @@ void Sidebar::show_sync_filament_dialog()
             auto_calc_flushing_volumes(i);
         }
 
+        std::string synced = _u8L("Filament types and colors have been successfully synced from the printer.");
+        if (spool_pa_slots > 0)
+            synced += " " + into_u8(wxString::Format(_L("%d of them print with the pressure advance saved on their spool."), spool_pa_slots));
         wxGetApp().plater()->get_notification_manager()->push_notification(
             NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::RegularNotificationLevel,
-            _u8L("Filament types and colors have been successfully synced from the printer."));
+            synced);
     }
 }
 

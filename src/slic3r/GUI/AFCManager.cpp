@@ -270,11 +270,14 @@ void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::
         host->async_jsonrpc_call("server.spoolman.proxy", params, [this, sn, spool](const json &res) {
             // A failed read counts as "no K" until it is due again.
             const double k = res.is_object() && res.count("data") ? AFCProtocol::spool_flow_k(res["data"]) : -1;
-            std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_sn != sn)
-                return;
-            m_flow_k_reading.erase(spool);
-            m_flow_k[spool] = FlowK{k, std::chrono::steady_clock::now()};
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_sn != sn)
+                    return;
+                m_flow_k_reading.erase(spool);
+                m_flow_k[spool] = FlowK{k, std::chrono::steady_clock::now()};
+            }
+            m_flow_k_read.notify_all();
         });
     }
 }
@@ -283,17 +286,23 @@ bool AFCManager::refresh_blocking(const std::shared_ptr<PrintHost> &host, int ti
 {
     if (!host)
         return false;
-    auto promise = std::make_shared<std::promise<bool>>();
-    auto future  = promise->get_future();
-    auto fired   = std::make_shared<std::once_flag>();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto       promise  = std::make_shared<std::promise<bool>>();
+    auto       future   = promise->get_future();
+    auto       fired    = std::make_shared<std::once_flag>();
     refresh_async(host, [promise, fired](bool present) { std::call_once(*fired, [&] { promise->set_value(present); }); });
-    if (future.wait_for(std::chrono::milliseconds(timeout_ms)) != std::future_status::ready) {
+    if (future.wait_until(deadline) != std::future_status::ready) {
         BOOST_LOG_TRIVIAL(warning) << "AFC: refresh timed out after " << timeout_ms << " ms";
         std::lock_guard<std::mutex> lock(m_mutex);
         m_refreshing = false;
         return m_snapshot.present && m_sn == host_key(host);
     }
-    return future.get();
+    const bool present = future.get();
+    // The sync puts each spool's flow K into its slot, so let those reads land too.
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (!m_flow_k_read.wait_until(lock, deadline, [this] { return m_flow_k_reading.empty(); }))
+        BOOST_LOG_TRIVIAL(warning) << "AFC: flow K reads still running after " << timeout_ms << " ms";
+    return present;
 }
 
 void AFCManager::request_refresh(const std::shared_ptr<PrintHost> &host, std::chrono::seconds max_age)
@@ -467,7 +476,8 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
                                 {"type", f.type},
                                 {"grams", f.grams},
                                 {"used", f.used},
-                                {"preset", i < presets.size() ? presets[i] : std::string()}});
+                                {"preset", i < presets.size() ? presets[i] : std::string()},
+                                {"spool_pa", wxGetApp().preset_bundle->spool_pressure_advance(i)}});
     }
     return out;
 }

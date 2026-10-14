@@ -268,6 +268,10 @@ public:
     // Set the filament preset name. As the name could come from the UI selection box,
     // an optional "(modified)" suffix will be removed from the filament name.
     void                        set_filament_preset(size_t idx, const std::string &name);
+    // AFC: pressure advance of the spool synced into filament slot idx (project config
+    // "spool_pressure_advance"); -1 = the slot uses its filament preset's.
+    void                        set_spool_pressure_advance(size_t idx, double k);
+    double                      spool_pressure_advance(size_t idx) const;
 
     // Read out the number of extruders from an active printer preset,
     // update size and content of filament_presets.

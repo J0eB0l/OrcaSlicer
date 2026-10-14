@@ -4177,6 +4177,16 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionInts { 1 });
     // end Snapmaker: flow-variant support -------------------------------------------------------------
 
+    // AFC: written by the filament sync, kept with the project like the filament colours.
+    def = this->add("spool_pressure_advance", coFloats);
+    def->label = L("Spool pressure advance");
+    def->tooltip = L("Pressure advance saved on the spool synced into each filament slot (AFC flow K). "
+                     "It replaces the filament preset's pressure advance for that slot and turns pressure "
+                     "advance on. -1 keeps the preset's value.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionFloats { -1 });
+
     def = this->add("cooling_tube_retraction", coFloat);
     def->label = L("Cooling tube position");
     def->tooltip = L("Distance of the center-point of the cooling tube from the extruder tip.");

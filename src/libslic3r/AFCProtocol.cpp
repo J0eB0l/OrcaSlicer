@@ -816,6 +816,7 @@ std::vector<ToolSlot> tool_slots(const Snapshot &snapshot)
                 if (!lane->color.empty())
                     slot.color = lane->color;
                 slot.colors = lane->multi_colors;
+                slot.flow_k = lane->flow_k;
             }
         }
         if (slot.colors.empty())
@@ -823,6 +824,31 @@ std::vector<ToolSlot> tool_slots(const Snapshot &snapshot)
         out.push_back(std::move(slot));
     }
     return out;
+}
+
+bool apply_spool_pressure_advance(const std::vector<double> &spool, const std::vector<int> &step_sizes,
+                                  std::vector<double> &pressure_advance, std::vector<unsigned char> &enable)
+{
+    bool   changed = false;
+    size_t start   = 0;
+    for (size_t slot = 0; slot < spool.size(); ++slot) {
+        const size_t size = slot < step_sizes.size() ? size_t(std::max(1, step_sizes[slot])) : 1;
+        const double k    = spool[slot];
+        if (std::isfinite(k) && k >= 0) {
+            for (size_t i = start; i < start + size && i < pressure_advance.size(); ++i)
+                if (pressure_advance[i] != k) {
+                    pressure_advance[i] = k;
+                    changed             = true;
+                }
+            for (size_t i = start; i < start + size && i < enable.size(); ++i)
+                if (!enable[i]) {
+                    enable[i] = 1;
+                    changed   = true;
+                }
+        }
+        start += size;
+    }
+    return changed;
 }
 
 std::string filament_display_name(const std::string &vendor, const std::string &type, const std::string &sub_type)
