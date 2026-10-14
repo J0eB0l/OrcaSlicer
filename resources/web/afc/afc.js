@@ -429,7 +429,7 @@
     const color = hexOk(l.color) ? l.color : '#FFFFFF';
     return '<div class="drawer" id="drawer"><h2>' + spool(l, true) + esc(l.name) + '<span class="hint">' + esc(l.unit.replace(/_/g, ' ')) + (l.extruder_index >= 0 ? ' · feeds ' + headName(l.extruder_index).toLowerCase() : '') + '</span></h2>' +
       '<div class="form">' +
-      '<div class="field"><label>Colour</label><div class="color-row"><input type="color" id="f-colorpick" value="' + esc(color) + '"><input id="f-color" value="' + esc(color) + '" maxlength="7"></div></div>' +
+      '<div class="field"><label>Color</label><div class="color-row"><input type="color" id="f-colorpick" value="' + esc(color) + '"><input id="f-color" value="' + esc(color) + '" maxlength="7"></div></div>' +
       '<div class="field"><label>Material</label><input id="f-material" list="materials" value="' + esc(l.material || '') + '"><datalist id="materials">' + MATERIALS.map((m) => '<option value="' + m + '">').join('') + '</datalist></div>' +
       '<div class="field"><label>Remaining (g)</label><input id="f-weight" type="number" min="0" step="1" value="' + esc(Math.round(l.weight || 0)) + '"></div>' +
       '<div class="field"><label>Tool (T number)</label><select id="f-map">' + (l.maps && l.maps.length ? '' : '<option value="">none</option>') + tOptions + '</select></div>' +
@@ -438,7 +438,7 @@
       '<div class="field wide"><label>Spoolman spool ID' + (state.afc.spoolman ? '' : ' (Spoolman is not set up in AFC)') + '</label>' +
       '<div class="color-row"><input id="f-spool" type="number" min="0" step="1" value="' + esc(l.spool_id || '') + '" placeholder="none">' +
       (state.afc.spoolman_url ? '<button class="btn" id="open-spool"' + (l.spool_id ? '' : ' disabled') + '>Open in Spoolman</button>' : '') + '</div>' +
-      '<span class="hint">Setting a spool ID makes AFC fill colour, material and weight from Spoolman.' +
+      '<span class="hint">Setting a spool ID makes AFC fill color, material and weight from Spoolman.' +
       (flowK(l) ? ' The spool\'s saved flow K (pressure advance) is ' + esc(flowK(l).slice(2)) + '.' : '') + '</span></div>' +
       '</div>' +
       '<div class="actions"><button class="btn primary" id="save" disabled>Save</button><button class="btn ghost" id="close">Close</button><div class="grow"></div>' +
@@ -470,7 +470,7 @@
         changes.spool_id = spoolId;
       } else {
         const color = $('f-color').value.trim().toUpperCase();
-        if (!hexOk(color)) return toast('Colour must look like #RRGGBB', true);
+        if (!hexOk(color)) return toast('Color must look like #RRGGBB', true);
         if (color !== (l.color || '').toUpperCase()) changes.color = color;
         const material = $('f-material').value.trim();
         if (material && material !== l.material) changes.material = material;
@@ -535,7 +535,7 @@
     if (dup.length && !state.afc.multiple_mapping) out.push(['bad', 'Also picked for ' + dup.map((o) => 'T' + o.id).join(', ')]);
     if (l.material && f.type && materialKey(l.material) !== materialKey(f.type)) out.push(['warn', 'Lane has ' + l.material + ', the plate uses ' + f.type]);
     if (f.grams > 0 && l.weight > 0 && l.weight < f.grams) out.push(['warn', 'Needs ' + grams(f.grams) + ', about ' + grams(l.weight) + ' left']);
-    if (l.has_filament && colorDistance(l.color, f.color) > 120) out.push(['', 'Different colour']);
+    if (l.has_filament && colorDistance(l.color, f.color) > 120) out.push(['', 'Different color']);
     // The slot was sliced with the pressure advance of the spool it was synced from.
     if (l.has_filament && f.spool_pa >= 0 && typeof l.flow_k === 'number' && Math.abs(f.spool_pa - l.flow_k) > 1e-6)
       out.push(['', 'Sliced with K ' + +f.spool_pa.toFixed(4) + ', this spool has ' + flowK(l)]);
@@ -570,7 +570,7 @@
     $app.innerHTML =
       '<div class="bar"><div><h1>Match filaments to AFC lanes</h1><div class="sub">' + used.length + ' filament' + (used.length === 1 ? '' : 's') + ' on this plate · ' +
       afc.lanes.filter((x) => x.has_filament).length + ' loaded lanes in ' + laneUnits().length + ' unit' + (laneUnits().length === 1 ? '' : 's') + '</div></div>' +
-      '<div class="grow"></div><button class="btn" id="auto" title="Match by material, then colour">Auto match</button>' +
+      '<div class="grow"></div><button class="btn" id="auto" title="Match by material, then color">Auto match</button>' +
       '<button class="btn icon ghost" id="refresh" title="Read AFC again">⟳</button></div>' +
       '<div class="scroll" id="scroll">' + summary(used) +
       (state.project.sliced ? '' : '<div class="summary"><span class="pill warn">Slice the plate to see grams and which filaments it uses</span></div>') +

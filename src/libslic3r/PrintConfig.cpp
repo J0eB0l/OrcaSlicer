@@ -4177,7 +4177,7 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionInts { 1 });
     // end Snapmaker: flow-variant support -------------------------------------------------------------
 
-    // AFC: written by the filament sync, kept with the project like the filament colours.
+    // AFC: written by the filament sync, kept with the project like the filament colors.
     def = this->add("spool_pressure_advance", coFloats);
     def->label = L("Spool pressure advance");
     def->tooltip = L("Pressure advance saved on the spool synced into each filament slot (AFC flow K). "

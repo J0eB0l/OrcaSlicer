@@ -17,7 +17,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # A build started by hand waits for the one running on its branch instead of cancelling it.
+  # A build started by hand waits for the one running on its branch instead of canceling it.
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
   
 

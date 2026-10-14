@@ -224,7 +224,7 @@ TEST_CASE("tool mapping replays SET_MAP swaps", "[AFCProtocol]")
     CHECK(g.empty());
 }
 
-TEST_CASE("suggested mapping prefers material, then colour, then current T(n)", "[AFCProtocol]")
+TEST_CASE("suggested mapping prefers material, then color, then current T(n)", "[AFCProtocol]")
 {
     AFCProtocol::Snapshot s;
     REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));

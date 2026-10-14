@@ -981,7 +981,7 @@ bool build_lane_edit_gcode(const Snapshot &snapshot, const std::string &lane_nam
     }
     const std::string lane_arg = " LANE=" + lane_name;
 
-    // Fixed order: a Spoolman id first, since AFC then pulls colour, material
+    // Fixed order: a Spoolman id first, since AFC then pulls color, material
     // and weight from Spoolman and the explicit values below must win.
     static const char *order[] = {"spool_id", "map", "material", "color", "weight", "nozzle_temp", "bed_temp"};
     for (auto it = changes.begin(); it != changes.end(); ++it)
@@ -1162,7 +1162,7 @@ std::vector<std::string> suggest_mapping(const Snapshot &snapshot, const std::ve
     const bool unique = used_count <= loaded.size();
     std::set<std::string> taken;
 
-    // Two colours this close read as "the same" to the eye (CIEDE2000 ~ 10,
+    // Two colors this close read as "the same" to the eye (CIEDE2000 ~ 10,
     // RGB ~ 40); keep the lane AFC already maps when it is that close.
     auto same_enough = [&](const ProjectFilament &f, const Lane &l) {
         const bool material_ok = is_unknown(l.material) || is_unknown(f.type) ||

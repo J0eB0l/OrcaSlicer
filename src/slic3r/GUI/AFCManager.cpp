@@ -634,10 +634,10 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
 
     const DynamicPrintConfig &project = wxGetApp().preset_bundle->project_config;
     const DynamicPrintConfig  full    = wxGetApp().preset_bundle->full_config();
-    const auto *colours  = project.option<ConfigOptionStrings>("filament_colour");
+    const auto *colors   = project.option<ConfigOptionStrings>("filament_colour");
     const auto *types    = full.option<ConfigOptionStrings>("filament_type");
     const auto *density  = full.option<ConfigOptionFloats>("filament_density");
-    const size_t count   = colours ? colours->values.size() : 0;
+    const size_t count   = colors ? colors->values.size() : 0;
 
     const GCodeProcessorResult *result  = plate->get_slice_result();
     const bool                  sliced  = result != nullptr && plate->is_slice_result_valid();
@@ -651,7 +651,7 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
     for (size_t i = 0; i < count; ++i) {
         AFCProtocol::ProjectFilament f;
         f.id    = int(i);
-        f.color = AFCProtocol::normalize_color(colours->values[i]);
+        f.color = AFCProtocol::normalize_color(colors->values[i]);
         f.type  = types ? types->get_at(int(i)) : std::string();
         auto v  = volumes.find(i);
         f.used  = !sliced || (v != volumes.end() && v->second > 0);

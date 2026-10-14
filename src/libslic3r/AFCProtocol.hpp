@@ -33,7 +33,7 @@ struct Lane
     std::string              extruder;       ///< AFC extruder this lane feeds, e.g. "extruder1"
     int                      extruder_index{-1}; ///< physical toolhead index (extruder=0, extruder1=1, ...)
     std::string              color;          ///< "#RRGGBB", empty when unknown
-    std::vector<std::string> multi_colors;   ///< "#RRGGBB" list for multi colour spools
+    std::vector<std::string> multi_colors;   ///< "#RRGGBB" list for multi color spools
     std::string              material;
     std::string              sub_type;
     std::string              vendor;
@@ -110,7 +110,7 @@ int tool_number(const std::string &map);
 /// "extruder" -> 0, "extruder3" -> 3, anything else -> -1.
 int extruder_index_from_name(const std::string &extruder);
 
-/// "#ff00aa", "ff00aa", "FF00AAFF" -> "#FF00AA". Empty when not a colour.
+/// "#ff00aa", "ff00aa", "FF00AAFF" -> "#FF00AA". Empty when not a color.
 std::string normalize_color(const std::string &color);
 
 /// Parse the result of the `printer.afc.status` JSON-RPC call (the AFC
@@ -235,12 +235,12 @@ struct ProjectFilament
     bool        used{true}; ///< the sliced plate uses this filament
 };
 
-/// Colour distance callback, lower = closer (the GUI passes CIEDE2000).
+/// Color distance callback, lower = closer (the GUI passes CIEDE2000).
 using ColorDistance = std::function<double(const std::string &, const std::string &)>;
 
 /// Suggest a lane for every used project filament. Prefers the lane already
-/// mapped to the filament's T(n) when its material and colour agree, then the
-/// same material with the closest colour, then the closest colour on any
+/// mapped to the filament's T(n) when its material and color agree, then the
+/// same material with the closest color, then the closest color on any
 /// loaded lane. Each lane is used once while enough loaded lanes exist.
 /// Returns lane names aligned with `filaments` ("" = no suggestion).
 std::vector<std::string> suggest_mapping(const Snapshot &snapshot, const std::vector<ProjectFilament> &filaments,

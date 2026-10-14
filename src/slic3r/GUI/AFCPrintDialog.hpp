@@ -24,7 +24,7 @@ public:
     static void finish_active(bool proceed);
 
     // Reads AFC from the printer and, when it has AFC, runs the mapping step.
-    // False only when the user cancelled; a printer without AFC passes straight through.
+    // False only when the user canceled; a printer without AFC passes straight through.
     static bool map_lanes_before_print(wxWindow *parent);
 
 private:
