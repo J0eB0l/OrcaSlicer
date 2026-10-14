@@ -151,22 +151,36 @@
   function unitByName(name) { return ((state && state.afc && state.afc.units) || []).find((u) => u.name === name); }
   function laneByName(name) { return lanes().find((l) => l.name === name); }
 
+  let stateJson = '';         // `state` as last drawn, to skip redrawing an unchanged poll
+
   async function load(refresh) {
     try {
       const data = await call('sw_AFC_GetState', { refresh: refresh !== false, project: VIEW === 'print' });
+      const json = JSON.stringify(data);
+      const unchanged = state !== null && json === stateJson;
       state = data;
+      stateJson = json;
       if (data && data.error) toast(data.error, true);
       if (VIEW === 'print' && mapping === null) resetMapping();
-      render();
+      if (!unchanged) render();
     } catch (e) {
       if (!state) renderError(e.message);
       else toast(e.message, true);
     }
   }
 
+  // A redraw replaces the scrolling boxes, which would send them back to the top
+  // every time the panel polls, so each one keeps its place.
   function render() {
+    const scrolled = [];
+    for (const el of $app.querySelectorAll('[id]'))
+      if (el.scrollTop || el.scrollLeft) scrolled.push([el.id, el.scrollTop, el.scrollLeft]);
     if (VIEW === 'print') renderPrint();
     else renderPanel();
+    for (const [id, top, left] of scrolled) {
+      const el = document.getElementById(id);
+      if (el) { el.scrollTop = top; el.scrollLeft = left; }
+    }
   }
 
   function renderError(message) {
@@ -368,7 +382,7 @@
         '<div class="actions"><div class="grow"></div>' +
         '<button class="btn ghost" id="dry-close">Cancel</button><button class="btn primary" id="dry-start">Start drying</button></div>';
     }
-    return '<div class="modal-back" id="dry-back"><div class="modal" role="dialog">' +
+    return '<div class="modal-back" id="dry-back"><div class="modal" id="dry-modal" role="dialog">' +
       '<h2><span class="unit-icon">' + esc(unitIcon(unit.type, unit.name)) + '</span>Dry ' + esc(unit.name.replace(/_/g, ' ')) +
       '<span class="hint">' + esc(d.model ? (/^ace/i.test(d.model) ? d.model : bambuModel(d.model)) : prettyType(unit.type)) + '</span></h2>' + body + '</div></div>';
   }
