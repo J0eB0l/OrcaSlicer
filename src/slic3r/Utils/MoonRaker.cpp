@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <sstream>
 #include <exception>
+#include <thread>
 #include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -1787,8 +1788,11 @@ void Moonraker_Mqtt::async_jsonrpc_call(const std::string& method, const nlohman
     BOOST_LOG_TRIVIAL(info) << "[Moonraker_Mqtt] JSON-RPC call: " << method;
     if (!send_to_request(method, params.is_null() ? json::object() : params, true, callback, [callback, method]() {
             BOOST_LOG_TRIVIAL(warning) << "[Moonraker_Mqtt] JSON-RPC call timed out: " << method;
+            // Timeouts fire with the request map locked. A callback that sends its next
+            // request from here would lock it again and hang every MQTT request, the
+            // device page and the UI with it, so it runs on a thread of its own.
             if (callback)
-                callback(json{{"error", "timeout"}});
+                std::thread([callback]() { callback(json{{"error", "timeout"}}); }).detach();
         }) && callback) {
         BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to send JSON-RPC call: " << method;
         callback(json{{"error", "send failed"}});

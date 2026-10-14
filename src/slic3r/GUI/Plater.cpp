@@ -696,30 +696,34 @@ Preset* resolve_filament_preset(PresetBundle* preset_bundle,
         return s;
     };
 
-    for (auto& preset : preset_bundle->filaments) {
-        if (!preset.is_compatible || !preset.is_system)
-            continue;
-
-        std::string base = extract_base_filament_name(preset.name);
-        if (to_lower(base) == to_lower(filament_name)) {
-            return &preset;
-        }
-    }
-
-    const std::string generic_prefix = "Generic ";
-    std::string generic_base = generic_prefix + filament_type;
-    for (auto& preset : preset_bundle->filaments) {
-        if (!preset.is_compatible || !preset.is_system)
-            continue;
-
-        std::string base = extract_base_filament_name(preset.name);
-        std::string type = preset.config.opt_string("filament_type", static_cast<unsigned int>(0));
-
-        if ((to_lower(type) == to_lower(filament_type)) && 
-                (to_lower(base) == to_lower(generic_base))) {
-            return &preset;
-        }
-    }
+    // System presets first, then the user's own: a custom Klipper printer (AFC on a
+    // Voron, say) often has no compatible system filaments, only presets saved for it.
+    const std::string generic_base = "Generic " + filament_type;
+    auto find = [&](bool system, auto &&matches, bool visible_only = false) -> Preset * {
+        for (auto &preset : preset_bundle->filaments)
+            if (preset.is_compatible && !preset.is_default && preset.is_system == system && (preset.is_visible || !visible_only) &&
+                matches(preset))
+                return &preset;
+        return nullptr;
+    };
+    auto same_name = [&](const Preset &preset) { return to_lower(extract_base_filament_name(preset.name)) == to_lower(filament_name); };
+    auto same_type = [&](const Preset &preset) {
+        return !filament_type.empty() &&
+               to_lower(preset.config.opt_string("filament_type", static_cast<unsigned int>(0))) == to_lower(filament_type);
+    };
+    auto generic_of_type = [&](const Preset &preset) {
+        return same_type(preset) && to_lower(extract_base_filament_name(preset.name)) == to_lower(generic_base);
+    };
+    for (bool system : {true, false})
+        if (Preset *preset = find(system, same_name))
+            return preset;
+    for (bool system : {true, false})
+        if (Preset *preset = find(system, generic_of_type))
+            return preset;
+    // Last resort: any preset of the right material beats keeping the slot's old one.
+    for (bool system : {true, false})
+        if (Preset *preset = find(system, same_type, true))
+            return preset;
 
     return nullptr;
 }
@@ -9396,6 +9400,8 @@ void Sidebar::show_sync_filament_dialog()
     SyncFilamentColorDialog dlg(this, designFilamentList, machineFilamentList);
     dlg.setHasMixedFilaments(preset_bundle->mixed_filaments.enabled_count() > 0);
     dlg.setMixedFilamentInfos(mixedInfos);
+    // AFC: overwrite keeps slot n on T(n), so a sync never drops the empty lanes' slots.
+    dlg.setKeepEmptySlots(afc_sync);
     {
         if (wxGetApp().plater()->model().objects.empty()) {
             dlg.setOverwriteMode();
@@ -9413,9 +9419,11 @@ void Sidebar::show_sync_filament_dialog()
 
         size_t combo_Size = p->combos_filament.size();
         if (effective_size != combo_Size) {
+            // Overwrite deletes the mixed filaments, so they do not count against the limit.
+            const size_t total_after = dlg.shouldDeleteMixedFilaments() ? effective_size :
+                                                                          preset_bundle->mixed_filaments.total_filaments(effective_size);
             if (effective_size > combo_Size &&
-                    (effective_size > MAXIMUM_EXTRUDER_NUMBER ||
-                        preset_bundle->mixed_filaments.total_filaments(effective_size) >= MAXIMUM_FILAMENT_NUMBER)) {
+                    (effective_size > MAXIMUM_EXTRUDER_NUMBER || total_after >= MAXIMUM_FILAMENT_NUMBER)) {
                 effective_size = combo_Size;
             }
             if (effective_size != combo_Size) {

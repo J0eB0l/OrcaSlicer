@@ -14,6 +14,7 @@
 
 #include <future>
 #include <sstream>
+#include <thread>
 
 namespace Slic3r {
 namespace GUI {
@@ -227,7 +228,9 @@ void AFCManager::refresh_async(const std::shared_ptr<PrintHost> &host, Callback 
         if (done)
             done(present);
     };
-    job->start();
+    // Off the UI thread: an MQTT host (the U1) publishes synchronously and can stall
+    // for seconds on a slow connection.
+    std::thread([job]() { job->start(); }).detach();
 }
 
 void AFCManager::finish_refresh(AFCProtocol::Snapshot snapshot, const std::string &sn)

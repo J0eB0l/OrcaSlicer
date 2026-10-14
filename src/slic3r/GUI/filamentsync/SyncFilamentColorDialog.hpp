@@ -45,6 +45,9 @@ public:
     bool shouldDeleteMixedFilaments() const;
 
     void setOverwriteMode();
+    // AFC: overwrite gives one slot per printer slot (T number), empty ones included,
+    // instead of only the non-empty ones among the project's current count.
+    void setKeepEmptySlots(bool keep);
 
     bool Layout() override;
 
@@ -104,6 +107,7 @@ private:
     bool m_bMappingMode        = true;
     bool m_hasMixedFilaments   = false;
     bool m_shouldDeleteMixedFilaments = false;
+    bool m_bKeepEmptySlots     = false;
 };
 
 } // namespace GUI

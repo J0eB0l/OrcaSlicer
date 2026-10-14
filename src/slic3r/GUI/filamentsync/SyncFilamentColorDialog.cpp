@@ -397,6 +397,8 @@ std::vector<FilamentData> SyncFilamentColorDialog::getSyncDataList() const
         return dataList;
 
     if (!m_bMappingMode) {
+        if (m_bKeepEmptySlots)
+            return m_machineDataList;
         return collectVisibleOverwriteMachineFilaments(m_machineDataList, m_designDataList.size());
     }
 
@@ -423,6 +425,13 @@ void SyncFilamentColorDialog::setOverwriteMode()
     if (m_pModeToggle)
         m_pModeToggle->setSelected(g_modeOverwrite);
     onModeChanged(g_modeOverwrite);
+}
+
+void SyncFilamentColorDialog::setKeepEmptySlots(bool keep)
+{
+    m_bKeepEmptySlots = keep;
+    if (!m_bMappingMode)
+        onCoverMatch();
 }
 
 bool SyncFilamentColorDialog::isAddUnUsedMachineFilaments() const
@@ -536,8 +545,20 @@ void SyncFilamentColorDialog::onCoverMatch()
     m_pFilamentColorMapBoxGroup->setGroupBoxEnable(false, FilamentColorMapBox::ButtonType::Below);
 
     // Build 1-based filament ID remap for overwrite mode.
-    // Cycle through non-NONE machine filaments only.
-    {
+    if (m_bKeepEmptySlots) {
+        // Slot n becomes printer slot n, so objects keep their filament number;
+        // numbers past the printer's last slot wrap onto its loaded ones.
+        std::vector<unsigned int> loaded;
+        for (size_t j = 0; j < machineCount; ++j)
+            if (!is_none_filament(m_machineDataList[j]))
+                loaded.push_back(static_cast<unsigned int>(j + 1));
+        m_filamentIdRemap.assign(designCount + 1, 0);
+        for (size_t old_id = 1; old_id <= designCount; ++old_id)
+            m_filamentIdRemap[old_id] = old_id <= machineCount ? static_cast<unsigned int>(old_id) :
+                                        loaded.empty()        ? 1u :
+                                                                loaded[(old_id - machineCount - 1) % loaded.size()];
+    } else {
+        // Cycle through non-NONE machine filaments only.
         std::vector<size_t> validPos;
         for (size_t j = 0; j < visibleCount; ++j) {
             if (!is_none_filament(m_machineDataList[j]))
