@@ -75,6 +75,21 @@ public:
     // own (the AFC was the only source of its machine filaments). UI thread only.
     bool drop_machine_filaments(PresetBundle &bundle);
 
+    // The filament preset for the spool on T(tool), for a filament sync. A
+    // compatible preset named after the spool's vendor and filament name wins.
+    // Otherwise one is made from `base` (the closest preset of the spool's
+    // material) with the spool's temperatures, density and diameter, saved as
+    // "<spool> @<printer>", and later syncs keep its values in step with the
+    // spool. `name` is empty when the spool has no vendor to go by or nothing
+    // could be made. UI thread only.
+    struct SpoolPreset
+    {
+        std::string name;
+        bool        created{false};
+        bool        updated{false};
+    };
+    SpoolPreset spool_filament_preset(PresetBundle &bundle, int tool, const std::string &base);
+
     // Project filaments of the current plate, with grams used and whether the
     // sliced plate uses them. UI thread only.
     std::vector<AFCProtocol::ProjectFilament> project_filaments(nlohmann::json *details = nullptr) const;

@@ -473,3 +473,48 @@ TEST_CASE("tool slots carry the lane's flow K", "[AFCProtocol]")
     CHECK_THAT(slots[0].flow_k, WithinAbs(0.032, 1e-9));
     CHECK(slots[1].flow_k == -1);
 }
+
+TEST_CASE("a spool's preset name comes from its vendor and filament name", "[AFCProtocol]")
+{
+    auto spool = [](const std::string &vendor, const std::string &filament, const std::string &material,
+                    const std::string &sub_type = "") {
+        AFCProtocol::Lane l;
+        l.vendor        = vendor;
+        l.filament_name = filament;
+        l.material      = material;
+        l.sub_type      = sub_type;
+        return l;
+    };
+    CHECK(AFCProtocol::spool_preset_name(spool("Polymaker", "PolyLite PLA", "PLA")) == "Polymaker PolyLite PLA");
+    // A filament name that already carries the vendor gets it once, spelled as the vendor is.
+    CHECK(AFCProtocol::spool_preset_name(spool("Polymaker", "polymaker PolyLite PLA", "PLA")) == "Polymaker PolyLite PLA");
+    // The material goes in when the filament name lacks it.
+    CHECK(AFCProtocol::spool_preset_name(spool("Prusament", "Galaxy Black", "PLA")) == "Prusament PLA Galaxy Black");
+    CHECK(AFCProtocol::spool_preset_name(spool("Overture", "Tough PLA-CF", "PLA")) == "Overture Tough PLA-CF");
+    // No filament name: vendor and material, like the U1 sync names it.
+    CHECK(AFCProtocol::spool_preset_name(spool("Elegoo", "", "PETG", "Translucent")) == "Elegoo PETG Translucent");
+    CHECK(AFCProtocol::spool_preset_name(spool("Elegoo", "Elegoo", "PETG")) == "Elegoo PETG");
+    // Nothing to tell the spool apart from a generic one.
+    CHECK(AFCProtocol::spool_preset_name(spool("", "PolyLite PLA", "PLA")).empty());
+    CHECK(AFCProtocol::spool_preset_name(spool("Generic", "PLA", "PLA")).empty());
+    CHECK(AFCProtocol::spool_preset_name(spool("NONE", "", "PLA")).empty());
+    CHECK(AFCProtocol::spool_preset_name(spool("Elegoo", "", "")).empty());
+    // File name and " @" characters are replaced, spaces tidied.
+    CHECK(AFCProtocol::spool_preset_name(spool(" eSUN ", "PLA+  Silk/Gold @2kg", "PLA")) == "eSUN PLA+ Silk-Gold -2kg");
+}
+
+TEST_CASE("a spool's preset may carry its filament name without the vendor", "[AFCProtocol]")
+{
+    AFCProtocol::Lane l;
+    l.vendor        = "Polymaker";
+    l.filament_name = "Polymaker PolyLite PLA";
+    l.material      = "PLA";
+    CHECK(AFCProtocol::spool_preset_aliases(l) == std::vector<std::string>{"Polymaker PolyLite PLA", "PolyLite PLA"});
+    // A bare material name would match a stranger's preset, so it is left out.
+    l.filament_name = "PLA";
+    CHECK(AFCProtocol::spool_preset_aliases(l) == std::vector<std::string>{"Polymaker PLA"});
+    l.filament_name = "";
+    CHECK(AFCProtocol::spool_preset_aliases(l) == std::vector<std::string>{"Polymaker PLA"});
+    l.vendor = "";
+    CHECK(AFCProtocol::spool_preset_aliases(l).empty());
+}

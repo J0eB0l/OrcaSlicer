@@ -9447,11 +9447,23 @@ void Sidebar::show_sync_filament_dialog()
             for (const AFCProtocol::ToolSlot &slot : AFCProtocol::tool_slots(AFCManager::instance().snapshot()))
                 spool_flow_k[slot.tool] = slot.has_filament ? slot.flow_k : -1.;
         int spool_pa_slots = 0;
+        int spool_presets_made = 0, spool_presets_updated = 0;
 
         for (size_t i = 0; i < effective_size; ++i) {
-            Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type);
-            if (matched) {
-                preset_bundle->set_filament_preset(i, matched->name);
+            std::string preset_name;
+            if (Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type))
+                preset_name = matched->name;
+            // AFC: the spool's own preset (vendor and filament name), made from the match above when it has none yet.
+            if (afc_sync) {
+                const AFCManager::SpoolPreset spool =
+                    AFCManager::instance().spool_filament_preset(*preset_bundle, int(syncedData[i].m_index), preset_name);
+                if (!spool.name.empty())
+                    preset_name = spool.name;
+                spool_presets_made += spool.created;
+                spool_presets_updated += spool.updated;
+            }
+            if (!preset_name.empty()) {
+                preset_bundle->set_filament_preset(i, preset_name);
             }
             // A sync replaces the slot's spool, so a K from an earlier sync never stays behind.
             auto k = spool_flow_k.find(int(syncedData[i].m_index));
@@ -9484,6 +9496,10 @@ void Sidebar::show_sync_filament_dialog()
         }
 
         const size_t num_filaments = effective_size;
+        // New spool presets go into the filament tab's list too.
+        if (spool_presets_made > 0 || spool_presets_updated > 0)
+            if (Tab* tab = wxGetApp().get_tab(Preset::TYPE_FILAMENT))
+                tab->update_tab_ui();
         wxGetApp().plater()->on_filaments_change(num_filaments);
 
         wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
@@ -9501,6 +9517,10 @@ void Sidebar::show_sync_filament_dialog()
         std::string synced = _u8L("Filament types and colors have been successfully synced from the printer.");
         if (spool_pa_slots > 0)
             synced += " " + into_u8(wxString::Format(_L("%d of them print with the pressure advance saved on their spool."), spool_pa_slots));
+        if (spool_presets_made > 0)
+            synced += " " + into_u8(wxString::Format(_L("Made %d filament presets from spool data."), spool_presets_made));
+        if (spool_presets_updated > 0)
+            synced += " " + into_u8(wxString::Format(_L("Updated %d filament presets from spool data."), spool_presets_updated));
         wxGetApp().plater()->get_notification_manager()->push_notification(
             NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::RegularNotificationLevel,

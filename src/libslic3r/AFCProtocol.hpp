@@ -178,6 +178,20 @@ std::vector<ToolSlot> tool_slots(const Snapshot &snapshot);
 /// "<vendor> <type>[ <sub_type>]", or "<vendor> Support For <type>".
 std::string filament_display_name(const std::string &vendor, const std::string &type, const std::string &sub_type);
 
+/// Base name of the filament preset that stands for a lane's spool, the part
+/// before " @<printer>": "<vendor> <filament name>" ("Polymaker PolyLite PLA"),
+/// with the material put in when the filament name lacks it ("Prusament PLA
+/// Galaxy Black"), or "<vendor> <material>" for a spool with no filament name.
+/// Characters a preset file name cannot hold become '-'. Empty for a spool
+/// with no vendor (or "Generic"): nothing tells it apart from a generic one.
+std::string spool_preset_name(const Lane &lane);
+
+/// Base names an existing filament preset may carry for this spool, best
+/// first: spool_preset_name, then the filament name without the vendor when it
+/// says more than the material (Snapmaker ships Polymaker's "PolyLite PLA").
+/// Empty when spool_preset_name is.
+std::vector<std::string> spool_preset_aliases(const Lane &lane);
+
 /// Put each filament slot's spool pressure advance (`spool`, one value per
 /// slot, -1 = keep the filament preset's) into a composed config's
 /// pressure_advance and enable_pressure_advance vectors. Every flow variant of

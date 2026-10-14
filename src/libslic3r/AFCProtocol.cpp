@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <set>
@@ -856,6 +857,104 @@ std::string filament_display_name(const std::string &vendor, const std::string &
     if (sub_type == "Support")
         return vendor + " Support For " + type;
     return vendor + " " + type + (!is_unknown(sub_type) ? " " + sub_type : std::string());
+}
+
+namespace {
+
+std::string lower_ascii(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return s;
+}
+
+// Single spaces, no ends, and '-' for what a preset file name or its " @" cannot hold.
+std::string clean_preset_part(const std::string &in)
+{
+    std::string out;
+    for (unsigned char c : in) {
+        if (c <= ' ') {
+            if (!out.empty() && out.back() != ' ')
+                out += ' ';
+        } else
+            out += std::strchr("<>:\"/\\|?*@", c) != nullptr ? '-' : char(c);
+    }
+    while (!out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out;
+}
+
+// "Polymaker PolyLite PLA" without its "Polymaker " (vendor already lower-cased).
+std::string without_vendor(const std::string &name, const std::string &vendor_lc)
+{
+    const std::string name_lc = lower_ascii(name);
+    if (name_lc == vendor_lc)
+        return {};
+    if (name_lc.size() > vendor_lc.size() && name_lc.compare(0, vendor_lc.size(), vendor_lc) == 0 && name[vendor_lc.size()] == ' ')
+        return clean_preset_part(name.substr(vendor_lc.size() + 1));
+    return name;
+}
+
+// A word of `name` starts with the material: "PLA" in "PolyLite PLA" or "Tough PLA-CF".
+bool names_material(const std::string &name, const std::string &material)
+{
+    const std::string name_lc = lower_ascii(name), material_lc = lower_ascii(material);
+    for (size_t pos = 0; pos < name_lc.size();) {
+        if (name_lc.compare(pos, material_lc.size(), material_lc) == 0)
+            return true;
+        pos = name_lc.find(' ', pos);
+        if (pos == std::string::npos)
+            break;
+        ++pos;
+    }
+    return false;
+}
+
+struct SpoolNames
+{
+    std::string vendor;   ///< cleaned, "" for none or "Generic"
+    std::string filament; ///< filament name without the vendor, cleaned
+    std::string material;
+};
+
+SpoolNames spool_names(const Lane &lane)
+{
+    SpoolNames out;
+    out.vendor = clean_preset_part(lane.vendor);
+    if (is_unknown(out.vendor) || lower_ascii(out.vendor) == "generic")
+        out.vendor.clear();
+    out.material = is_unknown(lane.material) ? std::string() : clean_preset_part(lane.material);
+    const std::string filament = clean_preset_part(lane.filament_name);
+    if (!out.vendor.empty() && !is_unknown(filament))
+        out.filament = without_vendor(filament, lower_ascii(out.vendor));
+    return out;
+}
+
+} // namespace
+
+std::string spool_preset_name(const Lane &lane)
+{
+    const SpoolNames n = spool_names(lane);
+    if (n.vendor.empty())
+        return {};
+    if (n.filament.empty())
+        return n.material.empty() ? std::string() :
+                                    clean_preset_part(filament_display_name(n.vendor, n.material, clean_preset_part(lane.sub_type)));
+    if (!n.material.empty() && !names_material(n.filament, n.material))
+        return n.vendor + " " + n.material + " " + n.filament;
+    return n.vendor + " " + n.filament;
+}
+
+std::vector<std::string> spool_preset_aliases(const Lane &lane)
+{
+    std::vector<std::string> out;
+    const std::string name = spool_preset_name(lane);
+    if (name.empty())
+        return out;
+    out.push_back(name);
+    const SpoolNames n = spool_names(lane);
+    if (!n.filament.empty() && lower_ascii(n.filament) != lower_ascii(n.material) && lower_ascii(n.filament) != lower_ascii(name))
+        out.push_back(n.filament);
+    return out;
 }
 
 bool is_safe_lane_name(const std::string &name)
