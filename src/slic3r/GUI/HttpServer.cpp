@@ -8,6 +8,7 @@
 #include <ctime>
 #include <condition_variable>
 #include "GUI_App.hpp"
+#include "slic3r/Utils/FlutterWebPatch.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/NetworkAgent.hpp"
 #include  "sentry_wrapper/SentryWrapper.hpp"
@@ -1115,6 +1116,11 @@ void HttpServer::ResponseFile::write_response(std::stringstream& ssOut)
     std::ostringstream fileStream;
     fileStream << file.rdbuf();
     std::string fileContent    = fileStream.str();
+    // Snapmaker's page: let the device page follow the slicer's dark mode.
+    if (!m_native_path && file_path.find("flutter_web") != std::string::npos) {
+        const std::size_t slash = file_path.find_last_of("/\\");
+        patch_flutter_web_file(boost::to_lower_copy(slash == std::string::npos ? file_path : file_path.substr(slash + 1)), fileContent);
+    }
     size_t      content_length = fileContent.size(); // 字节长度，非字符数
 
     const std::time_t last_write_time = get_file_last_write_time(file_path, m_native_path);

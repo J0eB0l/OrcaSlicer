@@ -8,7 +8,7 @@ Printers that run [AFC](https://github.com/ArmoredTurtle/AFC-Klipper-Add-On) on 
 - **Drying.** Units with a heater (ACE, ACE 2 Pro, Bambu AMS 2 Pro, AMS HT) show their temperature and humidity and a Dry button. The dry popup offers material presets, a temperature and time, and whether to turn the spools. A unit that is drying shows the target, the time left and a Stop button.
 - **Filament sync.** The Sync filaments button fills one slicer slot per AFC T number, with the lane's colour, material and Spoolman data. A printer with 17 lanes gets 17 slots.
 - **Print mapping.** Before a print starts, a popup suggests a lane for every project filament (by material, colour and remaining weight), lets each one be changed and applies the result to AFC with `SET_MAP`.
-- **Dark mode.** The panel and the print popup follow the slicer's dark mode.
+- **Dark mode.** The panel and the print popup follow the slicer's dark mode. The U1 device page switches to Snapmaker's own dark theme too; Snapmaker has not finished it, so its camera and control cards stay light.
 
 ## Which printers
 
