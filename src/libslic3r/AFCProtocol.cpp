@@ -324,12 +324,17 @@ int tool_number(const std::string &map)
 int extruder_index_from_name(const std::string &extruder)
 {
     static const std::string prefix = "extruder";
-    if (extruder.compare(0, prefix.size(), prefix) != 0)
+    size_t                   start  = 0;
+    if (extruder.compare(0, prefix.size(), prefix) == 0)
+        start = prefix.size();
+    else if (extruder.size() > 1 && extruder[0] == 'e')
+        start = 1; // AFC names the U1's toolheads e0-e3
+    else
         return -1;
-    if (extruder.size() == prefix.size())
-        return 0;
+    if (extruder.size() == start)
+        return start == prefix.size() ? 0 : -1;
     int v = 0;
-    for (size_t i = prefix.size(); i < extruder.size(); ++i) {
+    for (size_t i = start; i < extruder.size(); ++i) {
         if (!std::isdigit((unsigned char) extruder[i]))
             return -1;
         v = v * 10 + (extruder[i] - '0');

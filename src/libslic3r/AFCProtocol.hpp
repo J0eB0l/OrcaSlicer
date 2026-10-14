@@ -107,7 +107,7 @@ struct Snapshot
 /// "T12" -> 12, anything else -> -1.
 int tool_number(const std::string &map);
 
-/// "extruder" -> 0, "extruder3" -> 3, anything else -> -1.
+/// "extruder" -> 0, "extruder3" -> 3, AFC's "e1" (U1 toolheads) -> 1, anything else -> -1.
 int extruder_index_from_name(const std::string &extruder);
 
 /// "#ff00aa", "ff00aa", "FF00AAFF" -> "#FF00AA". Empty when not a color.

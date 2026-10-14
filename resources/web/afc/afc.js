@@ -95,7 +95,20 @@
     return '<span class="spool' + (small ? ' sm' : '') + (hexOk(color) ? '' : ' none') + '" style="' + (hexOk(color) ? 'background:' + color : '') + '"></span>';
   }
 
-  function headName(idx) { return idx >= 0 ? 'Head ' + (idx + 1) : 'Toolhead'; }
+  // Toolhead index of an AFC extruder name, as the slicer reads it: extruder -> 0, extruder2 -> 2, e1 -> 1.
+  function extruderIndex(name) {
+    const m = /^(?:extruder(\d*)|e(\d+))$/.exec(name || '');
+    return m ? +(m[1] || m[2] || 0) : -1;
+  }
+
+  // A toolhead goes by its AFC extruder name (e0, extruder1), as in AFC's own config.
+  function headName(idx) {
+    const afc = state && state.afc;
+    const lane = afc && afc.lanes.find((l) => l.extruder_index === idx && l.extruder);
+    if (lane) return lane.extruder;
+    const name = afc && (afc.extruders || []).find((e) => extruderIndex(e) === idx);
+    return name || (idx >= 0 ? 'extruder' + (idx || '') : 'toolhead');
+  }
 
   const UNIT_ICONS = [
     // OpenAMS before the Bambu rule: its name contains "AMS" too.
@@ -246,8 +259,8 @@
   function headsStrip(afc) {
     const heads = new Map();
     for (const name of afc.extruders || []) {
-      const m = /^extruder(\d*)$/.exec(name);
-      heads.set(m ? (m[1] ? +m[1] : 0) : heads.size, null);
+      const idx = extruderIndex(name);
+      heads.set(idx >= 0 ? idx : heads.size, null);
     }
     for (const l of afc.lanes) {
       if (l.extruder_index >= 0 && !heads.has(l.extruder_index)) heads.set(l.extruder_index, null);
@@ -256,7 +269,7 @@
     if (heads.size < 2 && !afc.lanes.some((l) => l.tool_loaded)) return '';
     let html = '<div class="heads">';
     for (const [idx, lane] of [...heads.entries()].sort((a, b) => a[0] - b[0])) {
-      html += '<div class="head">' + spool(lane, true) + '<div style="min-width:0"><div class="label">' + headName(idx) + '</div>' +
+      html += '<div class="head">' + spool(lane, true) + '<div style="min-width:0"><div class="label">' + esc(headName(idx)) + '</div>' +
         '<div class="what">' + (lane ? esc(lane.name) + ' · ' + esc(lane.material || '') : '<span class="hint">Empty</span>') + '</div></div></div>';
     }
     return html + '</div>';
@@ -280,14 +293,14 @@
     const pct = Math.max(0, Math.min(100, (l.weight / initial) * 100));
     const meterCls = pct < 5 ? ' out' : pct < 15 ? ' low' : '';
     let status = '';
-    if (l.tool_loaded) status = '<span class="pill ok"><span class="dot"></span>In ' + headName(l.extruder_index).toLowerCase() + '</span>';
+    if (l.tool_loaded) status = '<span class="pill ok"><span class="dot"></span>In ' + esc(headName(l.extruder_index)) + '</span>';
     if (l.spool_id) status += '<span class="pill accent" title="Spoolman spool">#' + esc(l.spool_id) + '</span>';
     if (flowK(l)) status += '<span class="pill" title="Flow K (pressure advance) saved on the spool">' + esc(flowK(l)) + '</span>';
     return '<div class="lane' + (l.has_filament ? '' : ' empty') + (l.tool_loaded ? ' in-tool' : '') + (l.name === selected ? ' selected' : '') + '" data-lane="' + esc(l.name) + '">' +
       '<div class="lane-top">' + spool(l) + '<div style="min-width:0"><div class="lane-name">' + esc(l.name) + '</div>' +
       '<div class="lane-meta">' + maps + '</div></div></div>' +
       '<div class="lane-sub" title="' + esc(l.filament_name || '') + '">' + esc(laneSubtitle(l)) + '</div>' +
-      (l.has_filament && l.weight > 0 ? '<div class="meter' + meterCls + '"><i style="width:' + pct.toFixed(0) + '%"></i></div><div class="grams"><span>' + grams(l.weight) + '</span><span>' + (l.extruder_index >= 0 ? headName(l.extruder_index) : '') + '</span></div>' : '') +
+      (l.has_filament && l.weight > 0 ? '<div class="meter' + meterCls + '"><i style="width:' + pct.toFixed(0) + '%"></i></div><div class="grams"><span>' + grams(l.weight) + '</span><span>' + (l.extruder_index >= 0 ? esc(headName(l.extruder_index)) : '') + '</span></div>' : '') +
       (status ? '<div class="lane-meta">' + status + '</div>' : '') +
       '</div>';
   }
@@ -427,7 +440,7 @@
       tOptions += '<option value="T' + t + '"' + ((l.maps || [])[0] === 'T' + t ? ' selected' : '') + '>T' + t + (owner && owner.name !== l.name ? ' (now ' + esc(owner.name) + ')' : '') + '</option>';
     }
     const color = hexOk(l.color) ? l.color : '#FFFFFF';
-    return '<div class="drawer" id="drawer"><h2>' + spool(l, true) + esc(l.name) + '<span class="hint">' + esc(l.unit.replace(/_/g, ' ')) + (l.extruder_index >= 0 ? ' · feeds ' + headName(l.extruder_index).toLowerCase() : '') + '</span></h2>' +
+    return '<div class="drawer" id="drawer"><h2>' + spool(l, true) + esc(l.name) + '<span class="hint">' + esc(l.unit.replace(/_/g, ' ')) + (l.extruder_index >= 0 ? ' · feeds ' + esc(headName(l.extruder_index)) : '') + '</span></h2>' +
       '<div class="form">' +
       '<div class="field"><label>Color</label><div class="color-row"><input type="color" id="f-colorpick" value="' + esc(color) + '"><input id="f-color" value="' + esc(color) + '" maxlength="7"></div></div>' +
       '<div class="field"><label>Material</label><input id="f-material" list="materials" value="' + esc(l.material || '') + '"><datalist id="materials">' + MATERIALS.map((m) => '<option value="' + m + '">').join('') + '</datalist></div>' +
@@ -492,7 +505,7 @@
       if (!confirm(question)) return;
       await run(() => call('sw_AFC_LaneAction', { lane: l.name, action: name }), 'Sent to AFC');
     };
-    $('act-load').onclick = action('load', 'Load ' + l.name + ' into ' + headName(l.extruder_index).toLowerCase() + '? AFC unloads whatever is in that toolhead first.');
+    $('act-load').onclick = action('load', 'Load ' + l.name + ' into ' + headName(l.extruder_index) + '? AFC unloads whatever is in that toolhead first.');
     $('act-unload').onclick = action('unload', 'Unload ' + l.name + ' from its toolhead?');
     $('act-eject').onclick = action('eject', 'Eject ' + l.name + ' out of the unit?');
   }
@@ -532,7 +545,7 @@
     if (!l) return [['bad', 'Lane is gone']];
     if (!l.has_filament) out.push(['bad', laneName + ' is empty']);
     const dup = filaments().filter((o) => o.used && o.id !== f.id && mapping[o.id] === laneName);
-    if (dup.length && !state.afc.multiple_mapping) out.push(['bad', 'Also picked for ' + dup.map((o) => 'T' + o.id).join(', ')]);
+    if (dup.length && !state.afc.multiple_mapping) out.push(['bad', 'Also picked for ' + dup.map((o) => 'T' + o.id).join(', ') + '; AFC multiple tool mapping is off']);
     if (l.material && f.type && materialKey(l.material) !== materialKey(f.type)) out.push(['warn', 'Lane has ' + l.material + ', the plate uses ' + f.type]);
     if (f.grams > 0 && l.weight > 0 && l.weight < f.grams) out.push(['warn', 'Needs ' + grams(f.grams) + ', about ' + grams(l.weight) + ' left']);
     if (l.has_filament && colorDistance(l.color, f.color) > 120) out.push(['', 'Different color']);
@@ -602,7 +615,7 @@
   function picker(f, l) {
     let html = '<div class="pick"><button class="pick-btn" data-fil="' + f.id + '">' + spool(l) +
       '<div class="txt"><div class="l1">' + (l ? esc(l.name) + ' · ' + esc(l.material || '?') : 'Pick a lane') + '</div>' +
-      '<div class="l2">' + (l ? esc(l.unit.replace(/_/g, ' ')) + (l.weight > 0 ? ' · ' + grams(l.weight) + ' left' : '') + (l.extruder_index >= 0 ? ' · ' + headName(l.extruder_index) : '') + (flowK(l) ? ' · ' + esc(flowK(l)) : '') : '') + '</div></div>' +
+      '<div class="l2">' + (l ? esc(l.unit.replace(/_/g, ' ')) + (l.weight > 0 ? ' · ' + grams(l.weight) + ' left' : '') + (l.extruder_index >= 0 ? ' · ' + esc(headName(l.extruder_index)) : '') + (flowK(l) ? ' · ' + esc(flowK(l)) : '') : '') + '</div></div>' +
       '<span class="caret">▾</span></button>';
     if (openMenu === f.id) {
       html += '<div class="menu">';
@@ -616,7 +629,7 @@
           html += '<div class="opt' + (x.has_filament ? '' : ' disabled') + (mapping[f.id] === name ? ' cur' : '') + '" data-fil="' + f.id + '" data-lane="' + esc(name) + '">' +
             spool(x, true) + '<div class="txt"><div class="l1">' + esc(name) + ' · ' + esc(x.has_filament ? (x.material || '?') : 'empty') +
             (sameMat ? '' : '') + '</div><div class="l2">' + esc(x.vendor || '') + (x.weight > 0 && x.has_filament ? ' · ' + grams(x.weight) : '') +
-            (x.extruder_index >= 0 ? ' · ' + headName(x.extruder_index) : '') + (flowK(x) && x.has_filament ? ' · ' + esc(flowK(x)) : '') +
+            (x.extruder_index >= 0 ? ' · ' + esc(headName(x.extruder_index)) : '') + (flowK(x) && x.has_filament ? ' · ' + esc(flowK(x)) : '') +
             (takenBy.length ? ' · used by ' + takenBy.join(', ') : '') + '</div></div>' +
             (x.maps || []).map((m) => '<span class="tchip">' + esc(m) + '</span>').join('') + '</div>';
         }
@@ -638,8 +651,8 @@
     const units = new Set(used.map((f) => (laneByName(mapping[f.id]) || {}).unit).filter(Boolean));
     let chips = '<span class="pill accent">' + units.size + ' unit' + (units.size === 1 ? '' : 's') + ' in use</span>';
     for (const [idx, set] of [...perHead.entries()].sort((a, b) => a[0] - b[0])) {
-      if (set.size > 1) chips += '<span class="pill warn" title="AFC swaps filament in this toolhead during the print">' + headName(idx) + ' swaps between ' + esc([...set].join(', ')) + '</span>';
-      else chips += '<span class="pill ok">' + headName(idx) + ': ' + esc([...set][0]) + '</span>';
+      if (set.size > 1) chips += '<span class="pill warn" title="AFC swaps filament in this toolhead during the print">' + esc(headName(idx)) + ' swaps between ' + esc([...set].join(', ')) + '</span>';
+      else chips += '<span class="pill ok">' + esc(headName(idx)) + ': ' + esc([...set][0]) + '</span>';
     }
     return '<div class="summary">' + chips + '</div>';
   }

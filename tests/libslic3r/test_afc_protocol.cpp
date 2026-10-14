@@ -261,6 +261,11 @@ TEST_CASE("suggested mapping prefers material, then color, then current T(n)", "
     CHECK(AFCProtocol::tool_number("lane1") == -1);
     CHECK(AFCProtocol::extruder_index_from_name("extruder3") == 3);
     CHECK(AFCProtocol::extruder_index_from_name("extruder_stepper x") == -1);
+    CHECK(AFCProtocol::extruder_index_from_name("extruder") == 0);
+    CHECK(AFCProtocol::extruder_index_from_name("e0") == 0);
+    CHECK(AFCProtocol::extruder_index_from_name("e3") == 3);
+    CHECK(AFCProtocol::extruder_index_from_name("e") == -1);
+    CHECK(AFCProtocol::extruder_index_from_name("ebb") == -1);
     CHECK(AFCProtocol::normalize_color("ff00aaFF") == "#FF00AA");
     CHECK(AFCProtocol::normalize_color("#12345") == "");
 }
