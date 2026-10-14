@@ -145,6 +145,19 @@ TEST_CASE("lane_data fills blanks only", "[AFCProtocol]")
     CHECK(s.find_lane("lane1")->material == "PLA");
 }
 
+TEST_CASE("lane_data keyed by lane name (older AFC) fills blanks too", "[AFCProtocol]")
+{
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));
+    REQUIRE(s.find_lane("lane6")->vendor.empty());
+    const json db = {{"namespace", "lane_data"},
+                     {"value", {{"lane6", {{"vendor_name", "Bambu"}, {"material", "PETG"}, {"lane", "5"}, {"spool_id", 12}}}}}};
+    AFCProtocol::merge_lane_data(db, s);
+    CHECK(s.find_lane("lane6")->vendor == "Bambu");
+    CHECK(s.find_lane("lane6")->material == "PETG");
+    CHECK(s.find_lane("lane6")->spool_id == 12);
+}
+
 TEST_CASE("tool slots are contiguous from T0 and empty lanes read NONE", "[AFCProtocol]")
 {
     AFCProtocol::Snapshot s;

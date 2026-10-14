@@ -18,7 +18,7 @@ namespace Slic3r {
 /// Data sources understood here, all reachable over Moonraker JSON-RPC:
 ///   - printer.afc.status           (AFC webhook: units -> lanes -> status)
 ///   - printer.objects.query        (AFC object + per-lane objects; fallback)
-///   - server.database.get_item     (namespace "lane_data", keyed by T(n))
+///   - server.database.get_item     (namespace "lane_data", keyed by T(n) or lane name)
 ///
 /// No wxWidgets dependency, so everything here is unit-tested.
 namespace AFCProtocol {
@@ -140,8 +140,9 @@ bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit, const nl
                      std::string &error);
 
 /// Fill blanks (vendor, temps, Spoolman id, extruder index, weights) from the
-/// Moonraker "lane_data" database namespace ({"T0": {...}, ...}). Values the
-/// live status already carries are kept.
+/// Moonraker "lane_data" database namespace ({"T0": {...}, ...} from newer AFC,
+/// {"lane1": {...}, ...} from older releases). Values the live status already
+/// carries are kept.
 void merge_lane_data(const nlohmann::json &lane_data, Snapshot &out);
 
 /// Snapshot as JSON for the AFC web page and the cache.

@@ -501,13 +501,15 @@ void merge_lane_data(const json &lane_data, Snapshot &out)
     for (auto it = data->begin(); it != data->end(); ++it) {
         if (!it->is_object())
             continue;
-        const int tool = tool_number(it.key());
-        if (tool < 0)
-            continue;
+        // Newer AFC keys each record by the T(n) it serves, older releases by lane name.
         Lane *lane = nullptr;
         for (Lane &l : out.lanes)
-            if (std::find(l.maps.begin(), l.maps.end(), it.key()) != l.maps.end())
+            if (l.name == it.key())
                 lane = &l;
+        if (lane == nullptr && tool_number(it.key()) >= 0)
+            for (Lane &l : out.lanes)
+                if (std::find(l.maps.begin(), l.maps.end(), it.key()) != l.maps.end())
+                    lane = &l;
         if (lane == nullptr)
             continue;
         const json &v = *it;
