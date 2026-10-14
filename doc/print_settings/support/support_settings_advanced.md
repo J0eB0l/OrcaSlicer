@@ -46,6 +46,10 @@ The pattern used for the support interface.
 
 Spacing of interface lines. Zero means solid interface.
 
+## Interface min area
+
+**Minimum Support Contact Area**, in mm². Tree supports only give an overhang interface layers when its area is larger than this. Lower values generate more support contact surfaces.
+
 ## Normal support expansion
 
 Expand (+) or shrink (-) the horizontal span of normal support.

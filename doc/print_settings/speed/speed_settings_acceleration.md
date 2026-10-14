@@ -53,3 +53,7 @@ Recommended to use a similar value to the [outer wall acceleration](#outer-wall)
 ## Travel
 
 Acceleration of [travel](speed_settings_travel) moves. This is usually set to a higher value than normal printing to reduce travel time.
+
+## First layer travel
+
+Acceleration of travel moves on the [initial layer](speed_settings_initial_layer_speed). A percentage is taken of the [travel acceleration](#travel). A value of 0 means the printer uses its firmware default.
