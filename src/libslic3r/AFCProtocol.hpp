@@ -118,6 +118,13 @@ std::string normalize_color(const std::string &color);
 /// (AFC sends the latter). Returns false when no AFC data is present.
 bool parse_status_endpoint(const nlohmann::json &result, Snapshot &out);
 
+/// Klipper AFC object fields the webhook leaves out, for afc_object_query().
+nlohmann::json afc_object_query();
+
+/// Read a `printer.objects.query` status map for afc_object_query() into a
+/// snapshot parsed from the webhook. A field the answer lacks keeps its value.
+void merge_afc_object(const nlohmann::json &status, Snapshot &out);
+
 /// Names of the per-lane Klipper objects in a `printer.objects.list` result
 /// ({"objects": [...]}) for the given lane names, e.g. "AFC_stepper lane1".
 std::vector<std::string> lane_object_names(const nlohmann::json &objects_list, const std::vector<std::string> &lane_names);

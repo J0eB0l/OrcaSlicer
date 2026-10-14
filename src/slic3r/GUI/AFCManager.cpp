@@ -41,9 +41,21 @@ struct RefreshJob : std::enable_shared_from_this<RefreshJob>
         auto self = shared_from_this();
         host->async_jsonrpc_call("printer.afc.status", json::object(), [self](const json &res) {
             if (res.is_object() && res.count("data") && AFCProtocol::parse_status_endpoint(res["data"], self->snapshot))
-                self->read_lane_data();
+                self->read_afc_object();
             else
                 self->read_objects();
+        });
+    }
+
+    // The webhook leaves out some settings, multiple tool mapping among them.
+    void read_afc_object()
+    {
+        auto       self   = shared_from_this();
+        const json params = {{"objects", AFCProtocol::afc_object_query()}};
+        host->async_jsonrpc_call("printer.objects.query", params, [self](const json &res) {
+            if (res.is_object() && res.count("data") && res["data"].is_object())
+                AFCProtocol::merge_afc_object(res["data"], self->snapshot);
+            self->read_lane_data();
         });
     }
 

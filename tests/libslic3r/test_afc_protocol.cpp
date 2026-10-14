@@ -101,6 +101,26 @@ TEST_CASE("AFC status without the webhook wrapper and junk input", "[AFCProtocol
     CHECK_FALSE(s.present);
 }
 
+TEST_CASE("multiple tool mapping comes from the AFC object, which the webhook leaves out", "[AFCProtocol]")
+{
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));
+    CHECK_FALSE(s.multiple_mapping);
+    CHECK(AFCProtocol::afc_object_query() == json{{"AFC", {"multiple_tool_mapping"}}});
+
+    AFCProtocol::merge_afc_object(json{{"eventtime", 1.0}, {"status", {{"AFC", {{"multiple_tool_mapping", true}}}}}}, s);
+    CHECK(s.multiple_mapping);
+    CHECK(s.lanes.size() == 4);
+
+    // An answer without the field (older AFC) or without AFC leaves it alone.
+    AFCProtocol::merge_afc_object(json{{"status", {{"AFC", json::object()}}}}, s);
+    CHECK(s.multiple_mapping);
+    AFCProtocol::merge_afc_object(json::array(), s);
+    CHECK(s.multiple_mapping);
+    AFCProtocol::merge_afc_object(json{{"AFC", {{"multiple_tool_mapping", false}}}}, s);
+    CHECK_FALSE(s.multiple_mapping);
+}
+
 TEST_CASE("AFC objects fallback finds lane objects and units", "[AFCProtocol]")
 {
     const json list = {{"objects", {"toolhead", "AFC", "AFC_BoxTurtle Turtle_1", "AFC_stepper lane1", "AFC_lane lane2",

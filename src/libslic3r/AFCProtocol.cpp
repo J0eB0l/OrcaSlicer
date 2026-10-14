@@ -391,6 +391,24 @@ bool parse_status_endpoint(const json &result, Snapshot &out)
     return true;
 }
 
+json afc_object_query()
+{
+    // AFC's webhook "system" block has no multiple_tool_mapping; only the object reports it.
+    return json{{"AFC", {"multiple_tool_mapping"}}};
+}
+
+void merge_afc_object(const json &status, Snapshot &out)
+{
+    const json *st = &status;
+    if (auto it = status.find("status"); it != status.end() && it->is_object())
+        st = &*it;
+    auto afc = st->is_object() ? st->find("AFC") : st->end();
+    if (afc == st->end() || !afc->is_object())
+        return;
+    if (auto it = afc->find("multiple_tool_mapping"); it != afc->end() && !it->is_null())
+        out.multiple_mapping = bool_field(*afc, "multiple_tool_mapping");
+}
+
 std::vector<std::string> lane_object_names(const json &objects_list, const std::vector<std::string> &lane_names)
 {
     std::vector<std::string> out;
