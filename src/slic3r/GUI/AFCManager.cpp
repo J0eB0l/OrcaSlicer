@@ -185,16 +185,17 @@ std::shared_ptr<PrintHost> AFCManager::afc_host()
         cfg.opt_string("print_host").empty())
         return nullptr;
 
-    static std::shared_ptr<PrintHost> s_host;
-    static std::string                s_key;
+    // Not s_host: winsock defines s_host as a macro.
+    static std::shared_ptr<PrintHost> s_moonraker;
+    static std::string                s_moonraker_key;
     const std::string key = cfg.opt_string("print_host") + "\n" + cfg.opt_string("printhost_apikey") + "\n" +
                             cfg.opt_string("printhost_cafile");
-    if (!s_host || s_key != key) {
+    if (!s_moonraker || s_moonraker_key != key) {
         DynamicPrintConfig moonraker = cfg;
-        s_host = std::make_shared<Moonraker>(&moonraker);
-        s_key  = key;
+        s_moonraker     = std::make_shared<Moonraker>(&moonraker);
+        s_moonraker_key = key;
     }
-    return s_host;
+    return s_moonraker;
 }
 
 std::string AFCManager::host_key(const std::shared_ptr<PrintHost> &host)
