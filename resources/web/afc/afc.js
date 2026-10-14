@@ -98,7 +98,8 @@
   function headName(idx) { return idx >= 0 ? 'Head ' + (idx + 1) : 'Toolhead'; }
 
   const UNIT_ICONS = [
-    [/bambu|ams/i, 'AMS'], [/box.?turtle/i, 'BT'], [/night.?owl/i, 'NO'], [/openams|oams/i, 'OA'],
+    // OpenAMS before the Bambu rule: its name contains "AMS" too.
+    [/openams|oams/i, 'OA'], [/bambu|ams/i, 'AMS'], [/box.?turtle/i, 'BT'], [/night.?owl/i, 'NO'],
     [/ace/i, 'ACE'], [/htlf/i, 'HT'], [/quattro/i, 'QB'], [/emu/i, 'EMU'], [/vivid/i, 'VV'], [/claymore/i, 'CM'],
   ];
   function unitIcon(type, name) {
