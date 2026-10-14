@@ -115,6 +115,10 @@ struct RefreshJob : std::enable_shared_from_this<RefreshJob>
     }
 };
 
+// How long a spool's flow K is trusted before it is read again. AFC autocal
+// only writes it after a calibration, so this mostly bounds how soon a new one shows.
+constexpr std::chrono::seconds k_flow_k_max_age{120};
+
 // Signature of the slots the slicer sees; a change means the combo boxes need rebuilding.
 std::string slots_key(const AFCProtocol::Snapshot &s)
 {
@@ -215,9 +219,10 @@ void AFCManager::refresh_async(const std::shared_ptr<PrintHost> &host, Callback 
     const std::string sn  = host_key(host);
     auto              job = std::make_shared<RefreshJob>();
     job->host             = host;
-    job->done             = [this, sn, done](AFCProtocol::Snapshot snapshot) {
+    job->done             = [this, host, sn, done](AFCProtocol::Snapshot snapshot) {
         const bool present = snapshot.present;
         finish_refresh(std::move(snapshot), sn);
+        read_flow_k(host, sn);
         if (done)
             done(present);
     };
@@ -227,6 +232,10 @@ void AFCManager::refresh_async(const std::shared_ptr<PrintHost> &host, Callback 
 void AFCManager::finish_refresh(AFCProtocol::Snapshot snapshot, const std::string &sn)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_sn != sn) {
+        m_flow_k.clear();
+        m_flow_k_reading.clear();
+    }
     if (snapshot.present || m_sn != sn || !m_snapshot.present)
         m_snapshot = std::move(snapshot);
     else
@@ -236,6 +245,38 @@ void AFCManager::finish_refresh(AFCProtocol::Snapshot snapshot, const std::strin
     m_sn         = sn;
     m_updated    = std::chrono::steady_clock::now();
     m_refreshing = false;
+}
+
+void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::string &sn)
+{
+    std::vector<int> spools;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_sn != sn || !m_snapshot.present)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        for (const AFCProtocol::Lane &lane : m_snapshot.lanes) {
+            if (lane.spool_id <= 0 || m_flow_k_reading.count(lane.spool_id))
+                continue;
+            auto known = m_flow_k.find(lane.spool_id);
+            if (known != m_flow_k.end() && now - known->second.read_at < k_flow_k_max_age)
+                continue;
+            m_flow_k_reading.insert(lane.spool_id);
+            spools.push_back(lane.spool_id);
+        }
+    }
+    for (const int spool : spools) {
+        const json params = {{"request_method", "GET"}, {"path", "/v1/spool/" + std::to_string(spool)}, {"use_v2_response", true}};
+        host->async_jsonrpc_call("server.spoolman.proxy", params, [this, sn, spool](const json &res) {
+            // A failed read counts as "no K" until it is due again.
+            const double k = res.is_object() && res.count("data") ? AFCProtocol::spool_flow_k(res["data"]) : -1;
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_sn != sn)
+                return;
+            m_flow_k_reading.erase(spool);
+            m_flow_k[spool] = FlowK{k, std::chrono::steady_clock::now()};
+        });
+    }
 }
 
 bool AFCManager::refresh_blocking(const std::shared_ptr<PrintHost> &host, int timeout_ms)
@@ -292,7 +333,13 @@ void AFCManager::request_refresh(const std::shared_ptr<PrintHost> &host, std::ch
 AFCProtocol::Snapshot AFCManager::snapshot() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_snapshot;
+    AFCProtocol::Snapshot out = m_snapshot;
+    for (AFCProtocol::Lane &lane : out.lanes) {
+        auto known = m_flow_k.find(lane.spool_id);
+        if (lane.spool_id > 0 && known != m_flow_k.end())
+            lane.flow_k = known->second.k;
+    }
+    return out;
 }
 
 bool AFCManager::has_afc() const
@@ -315,6 +362,8 @@ void AFCManager::clear()
     m_updated     = {};
     m_applied_key.clear();
     m_toolheads.clear();
+    m_flow_k.clear();
+    m_flow_k_reading.clear();
 }
 
 bool AFCManager::apply_machine_filaments(PresetBundle &bundle, const std::vector<ConnectMachineInfo> &toolheads)

@@ -132,6 +132,9 @@
 
   function grams(v) { return Math.round(v) + ' g'; }
 
+  // Flow K (pressure advance) saved on the lane's Spoolman spool by AFC autocal.
+  function flowK(lane) { return lane && typeof lane.flow_k === 'number' ? 'K ' + +lane.flow_k.toFixed(4) : ''; }
+
   // ------------------------------------------------------------------ state
   let state = null;          // last answer from sw_AFC_GetState
   let selected = null;       // lane name open in the editor (panel)
@@ -265,6 +268,7 @@
     let status = '';
     if (l.tool_loaded) status = '<span class="pill ok"><span class="dot"></span>In ' + headName(l.extruder_index).toLowerCase() + '</span>';
     if (l.spool_id) status += '<span class="pill accent" title="Spoolman spool">#' + esc(l.spool_id) + '</span>';
+    if (flowK(l)) status += '<span class="pill" title="Flow K (pressure advance) saved on the spool">' + esc(flowK(l)) + '</span>';
     return '<div class="lane' + (l.has_filament ? '' : ' empty') + (l.tool_loaded ? ' in-tool' : '') + (l.name === selected ? ' selected' : '') + '" data-lane="' + esc(l.name) + '">' +
       '<div class="lane-top">' + spool(l) + '<div style="min-width:0"><div class="lane-name">' + esc(l.name) + '</div>' +
       '<div class="lane-meta">' + maps + '</div></div></div>' +
@@ -420,7 +424,8 @@
       '<div class="field wide"><label>Spoolman spool ID' + (state.afc.spoolman ? '' : ' (Spoolman is not set up in AFC)') + '</label>' +
       '<div class="color-row"><input id="f-spool" type="number" min="0" step="1" value="' + esc(l.spool_id || '') + '" placeholder="none">' +
       (state.afc.spoolman_url ? '<button class="btn" id="open-spool"' + (l.spool_id ? '' : ' disabled') + '>Open in Spoolman</button>' : '') + '</div>' +
-      '<span class="hint">Setting a spool ID makes AFC fill colour, material and weight from Spoolman.</span></div>' +
+      '<span class="hint">Setting a spool ID makes AFC fill colour, material and weight from Spoolman.' +
+      (flowK(l) ? ' The spool\'s saved flow K (pressure advance) is ' + esc(flowK(l).slice(2)) + '.' : '') + '</span></div>' +
       '</div>' +
       '<div class="actions"><button class="btn primary" id="save" disabled>Save</button><button class="btn ghost" id="close">Close</button><div class="grow"></div>' +
       '<button class="btn" id="act-load"' + (l.has_filament && !l.tool_loaded ? '' : ' disabled') + ' title="CHANGE_TOOL: swap this lane into its toolhead">Load</button>' +
@@ -580,7 +585,7 @@
   function picker(f, l) {
     let html = '<div class="pick"><button class="pick-btn" data-fil="' + f.id + '">' + spool(l) +
       '<div class="txt"><div class="l1">' + (l ? esc(l.name) + ' · ' + esc(l.material || '?') : 'Pick a lane') + '</div>' +
-      '<div class="l2">' + (l ? esc(l.unit.replace(/_/g, ' ')) + (l.weight > 0 ? ' · ' + grams(l.weight) + ' left' : '') + (l.extruder_index >= 0 ? ' · ' + headName(l.extruder_index) : '') : '') + '</div></div>' +
+      '<div class="l2">' + (l ? esc(l.unit.replace(/_/g, ' ')) + (l.weight > 0 ? ' · ' + grams(l.weight) + ' left' : '') + (l.extruder_index >= 0 ? ' · ' + headName(l.extruder_index) : '') + (flowK(l) ? ' · ' + esc(flowK(l)) : '') : '') + '</div></div>' +
       '<span class="caret">▾</span></button>';
     if (openMenu === f.id) {
       html += '<div class="menu">';
@@ -594,7 +599,8 @@
           html += '<div class="opt' + (x.has_filament ? '' : ' disabled') + (mapping[f.id] === name ? ' cur' : '') + '" data-fil="' + f.id + '" data-lane="' + esc(name) + '">' +
             spool(x, true) + '<div class="txt"><div class="l1">' + esc(name) + ' · ' + esc(x.has_filament ? (x.material || '?') : 'empty') +
             (sameMat ? '' : '') + '</div><div class="l2">' + esc(x.vendor || '') + (x.weight > 0 && x.has_filament ? ' · ' + grams(x.weight) : '') +
-            (x.extruder_index >= 0 ? ' · ' + headName(x.extruder_index) : '') + (takenBy.length ? ' · used by ' + takenBy.join(', ') : '') + '</div></div>' +
+            (x.extruder_index >= 0 ? ' · ' + headName(x.extruder_index) : '') + (flowK(x) && x.has_filament ? ' · ' + esc(flowK(x)) : '') +
+            (takenBy.length ? ' · used by ' + takenBy.join(', ') : '') + '</div></div>' +
             (x.maps || []).map((m) => '<span class="tchip">' + esc(m) + '</span>').join('') + '</div>';
         }
       }

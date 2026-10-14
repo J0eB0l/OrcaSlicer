@@ -15,7 +15,7 @@
       extruder_index: head, color: color, multi_colors: [], material: material, sub_type: '', vendor: vendor,
       filament_name: vendor ? vendor + ' ' + material : '', spool_id: 0, weight: weight, initial_weight: 1000,
       density: 1.24, nozzle_temp: material === 'PETG' ? 240 : material === 'ABS' ? 260 : 215, bed_temp: material === 'PETG' ? 70 : material === 'ABS' ? 90 : 60,
-      prep: !!material, load: !!material, tool_loaded: false, has_filament: !!material, status: material ? 'Loaded' : 'None', td: '',
+      prep: !!material, load: !!material, tool_loaded: false, has_filament: !!material, status: material ? 'Loaded' : 'None', td: '', flow_k: null,
     }, extra || {});
   }
 
@@ -35,7 +35,7 @@
       { name: 'Tools', type: 'Toolchanger', lanes: [], dryer: null },
     ],
     lanes: [
-      lane('lane0', 'Ace2_1', 1, 0, 0, '#F2F2F2', 'PLA', 'Polymaker', 640, { spool_id: 41 }),
+      lane('lane0', 'Ace2_1', 1, 0, 0, '#F2F2F2', 'PLA', 'Polymaker', 640, { spool_id: 41, flow_k: 0.032 }),
       lane('lane1', 'Ace2_1', 2, 1, 1, '#1D1D1F', 'PLA', 'Elegoo', 996, { tool_loaded: true, status: 'Tooled' }),
       lane('lane2', 'Ace2_1', 3, 2, 2, '#E94B3C', 'PLA', 'Generic', 978, { tool_loaded: true, status: 'Tooled', spool_id: 133 }),
       lane('lane3', 'Ace2_1', 4, 3, 3, '', '', '', 0),
@@ -44,11 +44,11 @@
       lane('lane6', 'AMS_1', 3, 6, 4, '', '', '', 0),
       lane('lane7', 'AMS_1', 4, 7, 4, '', '', '', 0),
       lane('lane8', 'Turtle_1', 1, 8, 5, '', '', '', 0),
-      lane('lane9', 'Turtle_1', 2, 9, 5, '#D69090', 'PLA', 'Generic', 768, { tool_loaded: true, status: 'Tooled', spool_id: 40 }),
+      lane('lane9', 'Turtle_1', 2, 9, 5, '#D69090', 'PLA', 'Generic', 768, { tool_loaded: true, status: 'Tooled', spool_id: 40, flow_k: 0.028 }),
       lane('lane10', 'Turtle_1', 3, 10, 5, '#8E44AD', 'PLA', 'Overture', 530, { multi_colors: ['#8E44AD', '#2E86DE', '#16A085'] }),
       lane('lane11', 'Turtle_1', 4, 11, 5, '', '', '', 0),
       lane('lane12', 'Bambu_AMS_1', 1, 12, 0, '#0A2989', 'PLA', 'Bambu Lab', 60, { spool_id: 165 }),
-      lane('lane13', 'Bambu_AMS_1', 2, 13, 0, '#FF6A13', 'ABS', 'Bambu Lab', 964, { spool_id: 163 }),
+      lane('lane13', 'Bambu_AMS_1', 2, 13, 0, '#FF6A13', 'ABS', 'Bambu Lab', 964, { spool_id: 163, flow_k: 0.0215 }),
       lane('lane14', 'Bambu_AMS_1', 3, 14, 0, '#FFFFFF', 'PLA', 'Bambu Lab', 1000),
       lane('lane15', 'Bambu_AMS_1', 4, 15, 0, '#0086D6', 'PLA', 'Bambu Lab', 483, { spool_id: 136 }),
       lane('lane20', 'Bambu_AMS_HT_1', 1, 20, 0, '#5B5B5B', 'PA', 'Bambu Lab', 750, { sub_type: 'CF' }),
@@ -102,6 +102,7 @@
               l.maps = [p.changes.map];
             } else if (k === 'nozzle_temp' || k === 'bed_temp' || k === 'color' || k === 'material' || k === 'weight' || k === 'spool_id') {
               l[k] = p.changes[k];
+              if (k === 'spool_id') l.flow_k = null;
             }
           });
           return reply(msg.header, 200, 'OK', state(false));

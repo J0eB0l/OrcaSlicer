@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "libslic3r/AFCProtocol.hpp"
 
@@ -10,6 +11,7 @@
 
 using json = nlohmann::json;
 using namespace Slic3r;
+using Catch::Matchers::WithinAbs;
 
 namespace {
 
@@ -385,4 +387,40 @@ TEST_CASE("dry commands are validated per unit", "[AFCProtocol]")
     CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Turtle_1", json{{"action", "start"}, {"temp", 50}, {"minutes", 60}}, g, err)); // no dryer
     CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Ace2_1;M112", json{{"action", "stop"}}, g, err));
     CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "boost"}}, g, err));
+}
+
+TEST_CASE("flow K is read from the Spoolman spool's extra field", "[AFCProtocol]")
+{
+    // Spoolman JSON-encodes extra values, as AFC autocal writes them.
+    const json spool = {{"id", 12}, {"extra", {{"flow_k", "0.032"}, {"card_uids", "\"04A1B2\""}}}};
+    CHECK_THAT(AFCProtocol::spool_flow_k(spool), WithinAbs(0.032, 1e-9));
+
+    SECTION("through Moonraker's Spoolman proxy") {
+        CHECK_THAT(AFCProtocol::spool_flow_k(json{{"response", spool}, {"error", nullptr}}), WithinAbs(0.032, 1e-9));
+        CHECK(AFCProtocol::spool_flow_k(json{{"response", nullptr}, {"error", {{"status_code", 404}}}}) == -1);
+    }
+    SECTION("a plain number is taken as it is") {
+        CHECK_THAT(AFCProtocol::spool_flow_k(json{{"extra", {{"flow_k", 0.045}}}}), WithinAbs(0.045, 1e-9));
+    }
+    SECTION("no K, or one that is not a pressure advance value") {
+        CHECK(AFCProtocol::spool_flow_k(json{{"id", 3}, {"extra", json::object()}}) == -1);
+        CHECK(AFCProtocol::spool_flow_k(json{{"id", 3}}) == -1);
+        CHECK(AFCProtocol::spool_flow_k(json{{"extra", {{"flow_k", ""}}}}) == -1);
+        CHECK(AFCProtocol::spool_flow_k(json{{"extra", {{"flow_k", "\"fast\""}}}}) == -1);
+        CHECK(AFCProtocol::spool_flow_k(json{{"extra", {{"flow_k", "-0.1"}}}}) == -1);
+        CHECK(AFCProtocol::spool_flow_k(json()) == -1);
+    }
+}
+
+TEST_CASE("lanes carry flow K to the page only when the spool has one", "[AFCProtocol]")
+{
+    AFCProtocol::Snapshot s;
+    s.present = true;
+    s.lanes.resize(2);
+    s.lanes[0].name   = "lane1";
+    s.lanes[0].flow_k = 0.032;
+    s.lanes[1].name   = "lane2";
+    const json j = AFCProtocol::to_json(s);
+    CHECK_THAT(j["lanes"][0]["flow_k"].get<double>(), WithinAbs(0.032, 1e-9));
+    CHECK(j["lanes"][1]["flow_k"].is_null());
 }

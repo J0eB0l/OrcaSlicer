@@ -50,6 +50,7 @@ struct Lane
     bool                     tool_loaded{false};
     std::string              status;         ///< AFC lane status text ("Ready", "Loaded", ...)
     std::string              td;             ///< TD-1 transmission distance, when scanned
+    double                   flow_k{-1};     ///< pressure advance K saved on the Spoolman spool, -1 when none
 
     /// A lane holds filament when its prep or load sensor sees it.
     bool has_filament() const { return prep || load || tool_loaded; }
@@ -144,6 +145,12 @@ bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit, const nl
 /// {"lane1": {...}, ...} from older releases). Values the live status already
 /// carries are kept.
 void merge_lane_data(const nlohmann::json &lane_data, Snapshot &out);
+
+/// Flow K (pressure advance) saved on a Spoolman spool: the "flow_k" extra
+/// field AFC's autocal writes. Takes the spool record, or Moonraker's Spoolman
+/// proxy answer around it ({"response": spool, "error": ...}). -1 when the
+/// spool has none.
+double spool_flow_k(const nlohmann::json &spool);
 
 /// Snapshot as JSON for the AFC web page and the cache.
 nlohmann::json to_json(const Snapshot &snapshot);

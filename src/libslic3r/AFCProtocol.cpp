@@ -710,6 +710,30 @@ bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit_name, con
     return true;
 }
 
+double spool_flow_k(const json &spool)
+{
+    if (!spool.is_object())
+        return -1;
+    if (spool.contains("response"))
+        return spool_flow_k(spool["response"]);
+    auto extra = spool.find("extra");
+    if (extra == spool.end() || !extra->is_object())
+        return -1;
+    // Spoolman keeps every extra field JSON-encoded, so a float reads "0.032".
+    json value = extra->value("flow_k", json());
+    if (value.is_string()) {
+        try {
+            value = json::parse(value.get<std::string>());
+        } catch (const std::exception &) {
+            return -1;
+        }
+    }
+    if (!value.is_number())
+        return -1;
+    const double k = value.get<double>();
+    return std::isfinite(k) && k >= 0 ? k : -1;
+}
+
 json to_json(const Snapshot &s)
 {
     json j;
@@ -759,7 +783,8 @@ json to_json(const Snapshot &s)
                               {"tool_loaded", l.tool_loaded},
                               {"has_filament", l.has_filament()},
                               {"status", l.status},
-                              {"td", l.td}});
+                              {"td", l.td},
+                              {"flow_k", l.flow_k >= 0 ? json(l.flow_k) : json()}});
     }
     j["max_tool"] = s.max_tool();
     return j;

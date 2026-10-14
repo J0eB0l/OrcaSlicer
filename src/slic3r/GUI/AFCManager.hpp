@@ -8,8 +8,10 @@
 
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -87,6 +89,15 @@ private:
     AFCManager() = default;
 
     void finish_refresh(AFCProtocol::Snapshot snapshot, const std::string &sn);
+    // Read the flow K of every linked spool not read lately, through Moonraker's
+    // Spoolman proxy. Lanes pick it up on the next snapshot().
+    void read_flow_k(const std::shared_ptr<PrintHost> &host, const std::string &sn);
+
+    struct FlowK
+    {
+        double                                k{-1};   // -1: the spool has none
+        std::chrono::steady_clock::time_point read_at{};
+    };
 
     mutable std::mutex                      m_mutex;
     AFCProtocol::Snapshot                   m_snapshot;
@@ -95,6 +106,8 @@ private:
     bool                                    m_refreshing{false};
     std::vector<ConnectMachineInfo>         m_toolheads;      // UI thread
     std::string                             m_applied_key;    // UI thread: slots last applied
+    std::map<int, FlowK>                    m_flow_k;         // by Spoolman spool id, for the printer in m_sn
+    std::set<int>                           m_flow_k_reading; // spool ids with a read on the way
 };
 
 } // namespace GUI
