@@ -324,14 +324,14 @@ void AFCManager::refresh_async(const std::shared_ptr<PrintHost> &host, Callback 
             done(false);
         return;
     }
+    const std::string sn = host_key(host);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_refreshing = true;
+        m_refreshing.insert(sn);
     }
-    const std::string sn  = host_key(host);
-    auto              job = std::make_shared<RefreshJob>();
-    job->host             = host;
-    job->done             = [this, host, sn, done](AFCProtocol::Snapshot snapshot) {
+    auto job  = std::make_shared<RefreshJob>();
+    job->host = host;
+    job->done = [this, host, sn, done](AFCProtocol::Snapshot snapshot) {
         const bool present = snapshot.present;
         finish_refresh(std::move(snapshot), sn);
         read_flow_k(host, sn);
@@ -356,9 +356,9 @@ void AFCManager::finish_refresh(AFCProtocol::Snapshot snapshot, const std::strin
         // A failed read on the same printer keeps the last good snapshot,
         // so one MQTT hiccup does not collapse the slots back to four.
         BOOST_LOG_TRIVIAL(warning) << "AFC: refresh failed, keeping the previous snapshot";
-    m_sn         = sn;
-    m_updated    = std::chrono::steady_clock::now();
-    m_refreshing = false;
+    m_sn      = sn;
+    m_updated = std::chrono::steady_clock::now();
+    m_refreshing.erase(sn);
 }
 
 void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::string &sn)
@@ -400,7 +400,8 @@ bool AFCManager::refresh_blocking(const std::shared_ptr<PrintHost> &host, int ti
 {
     if (!host)
         return false;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const std::string sn       = host_key(host);
+    const auto        deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     auto       promise  = std::make_shared<std::promise<bool>>();
     auto       future   = promise->get_future();
     auto       fired    = std::make_shared<std::once_flag>();
@@ -408,15 +409,16 @@ bool AFCManager::refresh_blocking(const std::shared_ptr<PrintHost> &host, int ti
     if (future.wait_until(deadline) != std::future_status::ready) {
         BOOST_LOG_TRIVIAL(warning) << "AFC: refresh timed out after " << timeout_ms << " ms";
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_refreshing = false;
-        return m_snapshot.present && m_sn == host_key(host);
+        m_refreshing.erase(sn);
+        return m_snapshot.present && m_sn == sn;
     }
-    const bool present = future.get();
+    future.get();
     // The sync puts each spool's flow K into its slot, so let those reads land too.
     std::unique_lock<std::mutex> lock(m_mutex);
     if (!m_flow_k_read.wait_until(lock, deadline, [this] { return m_flow_k_reading.empty(); }))
         BOOST_LOG_TRIVIAL(warning) << "AFC: flow K reads still running after " << timeout_ms << " ms";
-    return present;
+    // A read that failed keeps this printer's last good snapshot; the sync uses that too.
+    return m_snapshot.present && m_sn == sn;
 }
 
 void AFCManager::request_refresh(const std::shared_ptr<PrintHost> &host, std::chrono::seconds max_age)
@@ -424,10 +426,13 @@ void AFCManager::request_refresh(const std::shared_ptr<PrintHost> &host, std::ch
     if (!host)
         return;
     {
+        const std::string           sn = host_key(host);
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_refreshing)
+        // Only this printer's own read holds it back: a read still waiting on the
+        // printer switched away from must not keep the new one's panel empty.
+        if (m_refreshing.count(sn))
             return;
-        if (m_sn == host_key(host) && std::chrono::steady_clock::now() - m_updated < max_age)
+        if (m_sn == sn && std::chrono::steady_clock::now() - m_updated < max_age)
             return;
     }
     refresh_async(host, [](bool) {
@@ -483,6 +488,8 @@ void AFCManager::clear()
     m_snapshot = AFCProtocol::Snapshot();
     m_sn.clear();
     m_updated     = {};
+    // A read still waiting on the old connection must not hold back the next one.
+    m_refreshing.clear();
     m_applied_key.clear();
     m_toolheads.clear();
     m_flow_k.clear();

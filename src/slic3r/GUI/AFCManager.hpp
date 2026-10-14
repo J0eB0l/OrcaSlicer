@@ -120,7 +120,7 @@ private:
     AFCProtocol::Snapshot                   m_snapshot;
     std::string                             m_sn;
     std::chrono::steady_clock::time_point   m_updated{};
-    bool                                    m_refreshing{false};
+    std::set<std::string>                   m_refreshing;     // printers (host_key) with a read on the way
     std::vector<ConnectMachineInfo>         m_toolheads;      // UI thread
     std::string                             m_applied_key;    // UI thread: slots last applied
     std::map<int, FlowK>                    m_flow_k;         // by Spoolman spool id, for the printer in m_sn

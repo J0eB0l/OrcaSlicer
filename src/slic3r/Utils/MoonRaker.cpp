@@ -1786,16 +1786,22 @@ void Moonraker_Mqtt::async_send_gcodes(const std::vector<std::string>& scripts, 
 void Moonraker_Mqtt::async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback)
 {
     BOOST_LOG_TRIVIAL(info) << "[Moonraker_Mqtt] JSON-RPC call: " << method;
-    if (!send_to_request(method, params.is_null() ? json::object() : params, true, callback, [callback, method]() {
+    // Callers chain their next request from the answer, so no answer may run where a
+    // request cannot be sent. Replies arrive on Paho's receive thread with the library
+    // lock held: a publish from there waits 3 s for that lock, marks the client
+    // disconnected and then blocks the receive thread for good, so the U1 stops
+    // answering and cannot be disconnected or switched. Timeouts fire with the request
+    // map locked, which a new request locks again. So every answer gets its own thread.
+    auto answer = [callback](const json& res) {
+        if (callback)
+            std::thread([callback, res]() { callback(res); }).detach();
+    };
+    if (!send_to_request(method, params.is_null() ? json::object() : params, true, answer, [answer, method]() {
             BOOST_LOG_TRIVIAL(warning) << "[Moonraker_Mqtt] JSON-RPC call timed out: " << method;
-            // Timeouts fire with the request map locked. A callback that sends its next
-            // request from here would lock it again and hang every MQTT request, the
-            // device page and the UI with it, so it runs on a thread of its own.
-            if (callback)
-                std::thread([callback]() { callback(json{{"error", "timeout"}}); }).detach();
-        }) && callback) {
+            answer(json{{"error", "timeout"}});
+        })) {
         BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to send JSON-RPC call: " << method;
-        callback(json{{"error", "send failed"}});
+        answer(json{{"error", "send failed"}});
     }
 }
 
