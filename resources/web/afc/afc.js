@@ -1,7 +1,7 @@
 /*
  * AFC lanes page for Snapmaker Orca.
  *
- *   index.html?view=panel  lane panel beside the U1 device page
+ *   index.html?view=panel  lane panel beside the printer's device page
  *   index.html?view=print  lane mapping step before a print
  *
  * Talks to the slicer over the same bridge as the device page
@@ -138,8 +138,13 @@
   let busy = false;
   let mapping = null;        // print view: filament id -> lane name
   let openMenu = null;       // print view: filament id with its picker open
+  let dryUnit = null;        // panel: unit name with the dry popup open
+  let dryForm = null;        // panel: what the dry popup holds {material, temp, hours, rotate}
 
   function lanes() { return (state && state.afc && state.afc.lanes) || []; }
+  // Units with lanes; AFC also lists a toolchanger entry and unclaimed BridgeBox spares.
+  function laneUnits() { return ((state && state.afc && state.afc.units) || []).filter((u) => (u.lanes || []).length); }
+  function unitByName(name) { return ((state && state.afc && state.afc.units) || []).find((u) => u.name === name); }
   function laneByName(name) { return lanes().find((l) => l.name === name); }
 
   async function load(refresh) {
@@ -181,20 +186,27 @@
     }
 
     const loadedCount = afc.lanes.filter((l) => l.has_filament).length;
-    const sub = 'AFC ' + esc(afc.version || '') + ' · ' + afc.units.length + ' unit' + (afc.units.length === 1 ? '' : 's') +
+    const units = laneUnits();
+    const sub = 'AFC ' + esc(afc.version || '') + ' · ' + units.length + ' unit' + (units.length === 1 ? '' : 's') +
       ' · ' + loadedCount + '/' + afc.lanes.length + ' lanes loaded';
 
     let html = bar(sub, '<button class="btn" id="sync" title="Use the AFC lanes as the project filaments">Sync to slicer</button>');
     html += '<div class="scroll" id="scroll">' + headsStrip(afc);
-    for (const unit of afc.units) html += unitCard(unit);
+    for (const unit of units) html += unitCard(unit);
     html += '</div>';
     if (selected && laneByName(selected)) html += editor(laneByName(selected));
+    const dryOpen = dryUnit && unitByName(dryUnit) && unitByName(dryUnit).dryer;
+    if (dryOpen) html += dryPopup(unitByName(dryUnit));
     $app.innerHTML = html;
     bindBar();
+    for (const el of document.querySelectorAll('[data-dry]')) {
+      el.onclick = (e) => { e.stopPropagation(); openDry(el.dataset.dry); };
+    }
+    if (dryOpen) bindDry(unitByName(dryUnit));
     const sync = document.getElementById('sync');
     if (sync) sync.onclick = () => call('sw_AFC_SyncToSlicer').catch((e) => toast(e.message, true));
     for (const el of document.querySelectorAll('.lane[data-lane]')) {
-      el.onclick = () => { selected = el.dataset.lane === selected ? null : el.dataset.lane; editorDirty = false; render(); };
+      el.onclick = () => { selected = el.dataset.lane === selected ? null : el.dataset.lane; editorDirty = false; dryUnit = null; render(); };
     }
     if (selected) bindEditor(laneByName(selected));
   }
@@ -234,7 +246,9 @@
 
   function unitCard(unit) {
     let html = '<div class="unit"><div class="unit-head"><div class="unit-icon">' + esc(unitIcon(unit.type, unit.name)) + '</div>' +
-      '<div><div class="name">' + esc(unit.name.replace(/_/g, ' ')) + '</div><div class="type">' + esc(prettyType(unit.type)) + '</div></div></div><div class="lanes">';
+      '<div><div class="name">' + esc(unit.name.replace(/_/g, ' ')) + '</div><div class="type">' + esc(prettyType(unit.type)) +
+      (unit.dryer && unit.dryer.model && !/^ace/i.test(unit.dryer.model) ? ' · ' + esc(bambuModel(unit.dryer.model)) : '') + '</div></div>' +
+      '<div class="grow"></div>' + dryChip(unit) + '</div><div class="lanes">';
     for (const name of unit.lanes) {
       const l = laneByName(name);
       if (l) html += laneTile(l);
@@ -257,6 +271,131 @@
       (l.has_filament && l.weight > 0 ? '<div class="meter' + meterCls + '"><i style="width:' + pct.toFixed(0) + '%"></i></div><div class="grams"><span>' + grams(l.weight) + '</span><span>' + (l.extruder_index >= 0 ? headName(l.extruder_index) : '') + '</span></div>' : '') +
       (status ? '<div class="lane-meta">' + status + '</div>' : '') +
       '</div>';
+  }
+
+  // ------------------------------------------------------------------ dryer
+  // Typical drying settings; the unit's own ceiling wins (ACE 2 70 °C, AMS 2 Pro 65 °C, AMS HT 85 °C).
+  const DRY_PRESETS = [
+    { m: 'PLA', t: 55, h: 8 }, { m: 'PETG', t: 65, h: 8 }, { m: 'TPU', t: 55, h: 8 }, { m: 'ABS', t: 80, h: 8 },
+    { m: 'ASA', t: 80, h: 8 }, { m: 'PC', t: 80, h: 8 }, { m: 'PA', t: 85, h: 12 }, { m: 'PVA', t: 55, h: 8 },
+  ];
+
+  function bambuModel(m) { return ({ ams2: 'AMS 2 Pro', ht: 'AMS HT', ams1: 'AMS', boxed: 'AMS', lite: 'AMS lite' })[m] || m; }
+
+  function duration(sec) {
+    sec = Math.max(0, Math.round(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+    return h ? h + ' h' + (m ? ' ' + m + ' min' : '') : m + ' min';
+  }
+
+  function climate(d) {
+    const parts = [];
+    if (d.temperature >= 0) parts.push(Math.round(d.temperature) + ' °C');
+    if (d.humidity >= 0) parts.push(Math.round(d.humidity) + '% RH');
+    return parts.join(' · ');
+  }
+
+  function dryChip(unit) {
+    const d = unit.dryer;
+    if (!d) return '';
+    if (d.drying) {
+      return '<button class="dry-chip on" data-dry="' + esc(unit.name) + '" title="Drying: open the dryer">' +
+        '<span class="dot"></span>' + Math.round(d.target) + ' °C · ' + duration(d.remaining_s) + ' left</button>';
+    }
+    const c = climate(d);
+    return (c ? '<span class="hint">' + esc(c) + '</span>' : '') +
+      '<button class="btn" data-dry="' + esc(unit.name) + '"' + (d.online ? '' : ' disabled title="The unit is offline"') + '>Dry</button>';
+  }
+
+  function presetFor(material, max) {
+    const key = materialKey(material);
+    const p = DRY_PRESETS.find((x) => x.m === key) || DRY_PRESETS[0];
+    return { material: p.m, temp: Math.min(p.t, max), hours: p.h };
+  }
+
+  function openDry(name) {
+    const unit = unitByName(name);
+    if (!unit || !unit.dryer) return;
+    const counts = {};
+    for (const ln of unit.lanes) {
+      const l = laneByName(ln);
+      const k = l && l.has_filament ? materialKey(l.material) : '';
+      if (k) counts[k] = (counts[k] || 0) + 1;
+    }
+    const common = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || 'PLA';
+    dryForm = Object.assign(presetFor(common, unit.dryer.max_temp || 85), { rotate: false });
+    dryUnit = name;
+    selected = null;
+    editorDirty = false;
+    render();
+  }
+
+  function dryPopup(unit) {
+    const d = unit.dryer;
+    const max = Math.round(d.max_temp || 85);
+    const f = dryForm || presetFor('PLA', max);
+    const lanesHere = unit.lanes.map(laneByName).filter(Boolean);
+    const inUse = lanesHere.filter((l) => l.tool_loaded).length;
+    const mats = new Set(lanesHere.filter((l) => l.has_filament).map((l) => materialKey(l.material)).filter(Boolean));
+    let body;
+    if (d.drying) {
+      const total = d.duration_s > 0 ? d.duration_s : 0;
+      const pct = total ? Math.max(0, Math.min(100, 100 * (1 - d.remaining_s / total))) : 0;
+      body = '<div class="dry-live"><div class="dry-big">' + Math.round(d.target) + ' °C</div>' +
+        '<div><div>' + duration(d.remaining_s) + ' left' + (total ? ' of ' + duration(total) : '') + '</div>' +
+        '<div class="hint">' + esc(climate(d) || 'No reading yet') + (d.rotate ? ' · spools turning' : '') + '</div></div></div>' +
+        (total ? '<div class="meter"><i style="width:' + pct.toFixed(0) + '%"></i></div>' : '') +
+        (d.note ? '<div class="pill warn" style="margin-top:10px">' + esc(d.note) + '</div>' : '') +
+        '<div class="actions"><div class="grow"></div><button class="btn ghost" id="dry-close">Close</button>' +
+        '<button class="btn danger" id="dry-stop">Stop drying</button></div>';
+    } else {
+      body = '<div class="dry-climate">' + esc(climate(d) || 'No temperature or humidity reading') + '</div>' +
+        '<div class="presets">' + DRY_PRESETS.map((p) => '<button class="preset' + (f.material === p.m ? ' cur' : '') + (mats.has(p.m) ? ' here' : '') +
+          '" data-preset="' + p.m + '"><b>' + p.m + '</b><span>' + Math.min(p.t, max) + ' °C · ' + p.h + ' h</span></button>').join('') + '</div>' +
+        '<div class="form">' +
+        '<div class="field"><label>Temperature (°C, up to ' + max + ')</label><input id="dry-temp" type="number" min="35" max="' + max + '" step="1" value="' + esc(f.temp) + '"></div>' +
+        '<div class="field"><label>Time (hours)</label><input id="dry-hours" type="number" min="0.5" max="48" step="0.5" value="' + esc(f.hours) + '"></div>' +
+        '<label class="field wide check"><input type="checkbox" id="dry-rotate"' + (f.rotate ? ' checked' : '') + '> Turn the spools while drying' +
+        '<span class="hint">AFC skips turning while a lane is loaded to the hub or a toolhead' + (inUse ? ' (' + inUse + ' in a toolhead now)' : '') + '.</span></label>' +
+        '</div>' +
+        (d.note ? '<div class="pill warn" style="margin-top:10px">' + esc(d.note) + '</div>' : '') +
+        '<div class="hint dry-foot">Preset values are typical; check the spool\'s label.</div>' +
+        '<div class="actions"><div class="grow"></div>' +
+        '<button class="btn ghost" id="dry-close">Cancel</button><button class="btn primary" id="dry-start">Start drying</button></div>';
+    }
+    return '<div class="modal-back" id="dry-back"><div class="modal" role="dialog">' +
+      '<h2><span class="unit-icon">' + esc(unitIcon(unit.type, unit.name)) + '</span>Dry ' + esc(unit.name.replace(/_/g, ' ')) +
+      '<span class="hint">' + esc(d.model ? (/^ace/i.test(d.model) ? d.model : bambuModel(d.model)) : prettyType(unit.type)) + '</span></h2>' + body + '</div></div>';
+  }
+
+  function bindDry(unit) {
+    const $ = (id) => document.getElementById(id);
+    const close = () => { dryUnit = null; dryForm = null; render(); };
+    $('dry-close').onclick = close;
+    $('dry-back').onclick = (e) => { if (e.target.id === 'dry-back') close(); };
+    const max = Math.round(unit.dryer.max_temp || 85);
+    if (unit.dryer.drying) {
+      $('dry-stop').onclick = async () => {
+        if (!confirm('Stop drying ' + unit.name.replace(/_/g, ' ') + '?')) return;
+        await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'stop' }), 'Dryer stopped');
+      };
+      return;
+    }
+    for (const el of document.querySelectorAll('[data-preset]')) {
+      el.onclick = () => { dryForm = Object.assign(presetFor(el.dataset.preset, max), { rotate: $('dry-rotate').checked }); render(); };
+    }
+    const keep = () => {
+      dryForm = { material: '', temp: parseFloat($('dry-temp').value), hours: parseFloat($('dry-hours').value), rotate: $('dry-rotate').checked };
+    };
+    for (const id of ['dry-temp', 'dry-hours', 'dry-rotate']) $(id).addEventListener('change', keep);
+    $('dry-start').onclick = async () => {
+      keep();
+      const temp = Math.round(dryForm.temp), minutes = Math.round(dryForm.hours * 60);
+      if (!(temp >= 35 && temp <= max)) return toast('Temperature must be 35-' + max + ' °C', true);
+      if (!(minutes >= 1 && minutes <= 2880)) return toast('Time must be up to 48 hours', true);
+      await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'start', temp: temp, minutes: minutes, rotate: dryForm.rotate }),
+        'Drying ' + unit.name.replace(/_/g, ' ') + ' at ' + temp + ' °C');
+    };
   }
 
   const MATERIALS = ['PLA', 'PLA+', 'PLA-CF', 'PETG', 'PETG-CF', 'ABS', 'ASA', 'TPU', 'PA', 'PA-CF', 'PC', 'PVA', 'HIPS', 'PET', 'PPS'];
@@ -407,7 +546,7 @@
 
     $app.innerHTML =
       '<div class="bar"><div><h1>Match filaments to AFC lanes</h1><div class="sub">' + used.length + ' filament' + (used.length === 1 ? '' : 's') + ' on this plate · ' +
-      afc.lanes.filter((x) => x.has_filament).length + ' loaded lanes in ' + afc.units.length + ' unit' + (afc.units.length === 1 ? '' : 's') + '</div></div>' +
+      afc.lanes.filter((x) => x.has_filament).length + ' loaded lanes in ' + laneUnits().length + ' unit' + (laneUnits().length === 1 ? '' : 's') + '</div></div>' +
       '<div class="grow"></div><button class="btn" id="auto" title="Match by material, then colour">Auto match</button>' +
       '<button class="btn icon ghost" id="refresh" title="Read AFC again">⟳</button></div>' +
       '<div class="scroll" id="scroll">' + summary(used) +
@@ -444,7 +583,7 @@
       '<span class="caret">▾</span></button>';
     if (openMenu === f.id) {
       html += '<div class="menu">';
-      for (const unit of state.afc.units) {
+      for (const unit of laneUnits()) {
         html += '<div class="grp">' + esc(unit.name.replace(/_/g, ' ')) + ' · ' + esc(prettyType(unit.type)) + '</div>';
         for (const name of unit.lanes) {
           const x = laneByName(name);
@@ -517,7 +656,8 @@
   })(30);
   if (VIEW === 'panel') {
     setInterval(() => {
-      if (document.hidden || busy || editorDirty || pending.size) return;
+      const dryEditing = dryUnit && !((unitByName(dryUnit) || {}).dryer || {}).drying;
+      if (document.hidden || busy || editorDirty || dryEditing || pending.size) return;
       load(true);
     }, 5000);
   }

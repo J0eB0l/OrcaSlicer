@@ -9281,7 +9281,15 @@ void Sidebar::show_sync_filament_dialog()
 
     std::shared_ptr<PrintHost> host = nullptr;
     wxGetApp().get_connect_host(host);
-    
+
+    // AFC: any printer whose Klipper runs AFC syncs one slot per AFC T(n), read fresh.
+    bool afc_sync = false;
+    if (auto afc_host = AFCManager::afc_host(); afc_host && wxGetApp().preset_bundle) {
+        wxBusyCursor busy;
+        if (AFCManager::instance().refresh_blocking(afc_host, 4000))
+            afc_sync = AFCManager::instance().reapply_machine_filaments(*wxGetApp().preset_bundle);
+    }
+
     MachineObject* device_machine = nullptr;
     {
         Slic3r::DeviceManager* dev = wxGetApp().getDeviceManager();
@@ -9293,7 +9301,7 @@ void Sidebar::show_sync_filament_dialog()
         }
     }
 
-    if (!host && !device_machine) {
+    if (!afc_sync && !host && !device_machine) {
         SyncRichConfirmDialog dlg(this,
             _L("No printer is connected. Please connect your U1 from the Device page before syncing."),
             wxYES_NO);
@@ -9305,7 +9313,7 @@ void Sidebar::show_sync_filament_dialog()
         return;
     }
 
-    {
+    if (!afc_sync) {
         static const std::set<std::string> white_list_machine_types = {
             "Snapmaker U1"
         };
@@ -9345,13 +9353,6 @@ void Sidebar::show_sync_filament_dialog()
     PresetBundle* preset_bundle = wxGetApp().preset_bundle;
     if (!preset_bundle)
         return;
-
-    // AFC: read the lanes fresh so the sync offers one slot per AFC T(n).
-    if (host) {
-        wxBusyCursor busy;
-        if (AFCManager::instance().refresh_blocking(host, 4000))
-            AFCManager::instance().reapply_machine_filaments(*preset_bundle);
-    }
 
     std::vector<FilamentData> machineFilamentList;
     build_machine_filament_list(preset_bundle, machineFilamentList);
@@ -21762,20 +21763,8 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
 
         // AFC: map every project filament to an AFC lane before the Snapmaker
         // print dialog, which only knows the four toolheads.
-        if (dlg.post_action() != PrintHostPostUploadAction::None) {
-            std::shared_ptr<PrintHost> afc_host;
-            wxGetApp().get_connect_host(afc_host);
-            bool afc_present = false;
-            if (afc_host) {
-                wxBusyCursor busy;
-                afc_present = AFCManager::instance().refresh_blocking(afc_host, 4000);
-            }
-            if (afc_present) {
-                AFCPrintDialog afc_dialog(this);
-                if (!afc_dialog.run())
-                    return;
-            }
-        }
+        if (dlg.post_action() != PrintHostPostUploadAction::None && !AFCPrintDialog::map_lanes_before_print(this))
+            return;
 
         WebPreprintDialog* dialog = new WebPreprintDialog();
         dialog->set_swtich_to_device(dlg.switch_to_device_tab());
@@ -21850,6 +21839,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.post_action = dlg.post_action();
         upload_job.upload_data.group       = dlg.group();
         upload_job.upload_data.storage     = dlg.storage();
+
+        // AFC: map every project filament to an AFC lane before the print starts.
+        if (upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint && !AFCPrintDialog::map_lanes_before_print(this))
+            return;
 
         // Show "Is printer clean" dialog for PrusaConnect - Upload and print.
         if (std::string(upload_job.printhost->get_name()) == "PrusaConnect" && upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint) {

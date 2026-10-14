@@ -5,6 +5,7 @@
 #include "PartPlate.hpp"
 #include "filamentsync/FilamentSyncAlgorithm.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
+#include "slic3r/Utils/MoonRaker.hpp"
 
 #include "libslic3r/Print.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
@@ -12,6 +13,7 @@
 #include <boost/log/trivial.hpp>
 
 #include <future>
+#include <sstream>
 
 namespace Slic3r {
 namespace GUI {
@@ -83,6 +85,22 @@ struct RefreshJob : std::enable_shared_from_this<RefreshJob>
         host->async_jsonrpc_call("server.database.get_item", json{{"namespace", "lane_data"}}, [self](const json &res) {
             if (res.is_object() && res.count("data"))
                 AFCProtocol::merge_lane_data(res["data"], self->snapshot);
+            self->read_dryers();
+        });
+    }
+
+    // Unit dryers (ACE, AMS 2 Pro, AMS HT) live on the units' own Klipper objects.
+    void read_dryers()
+    {
+        const json objects = AFCProtocol::dryer_objects_query(snapshot);
+        if (objects.empty()) {
+            finish();
+            return;
+        }
+        auto self = shared_from_this();
+        host->async_jsonrpc_call("printer.objects.query", json{{"objects", objects}}, [self](const json &res) {
+            if (res.is_object() && res.count("data") && res["data"].is_object())
+                AFCProtocol::merge_dryer_status(res["data"], self->snapshot);
             self->finish();
         });
     }
@@ -115,12 +133,72 @@ double ciede2000(const std::string &a, const std::string &b)
     return delta_e_ciede2000(byte(ca, 1), byte(ca, 3), byte(ca, 5), byte(cb, 1), byte(cb, 3), byte(cb, 5));
 }
 
+// One slot per toolhead from the printer settings, for printers whose device
+// page does not report toolheads (anything but the U1).
+std::vector<ConnectMachineInfo> preset_toolheads(const PresetBundle &bundle, const AFCProtocol::Snapshot &snap)
+{
+    const DynamicPrintConfig &cfg     = bundle.printers.get_edited_preset().config;
+    const auto               *nozzles = cfg.option<ConfigOptionFloats>("nozzle_diameter");
+    size_t                    count   = nozzles ? nozzles->values.size() : 0;
+    count                             = std::max(count, snap.extruders.size());
+    for (const AFCProtocol::Lane &lane : snap.lanes)
+        if (lane.extruder_index >= 0)
+            count = std::max(count, size_t(lane.extruder_index) + 1);
+    std::vector<ConnectMachineInfo> heads;
+    for (size_t i = 0; i < count; ++i) {
+        ConnectMachineInfo head;
+        head.index = int(i);
+        if (nozzles && !nozzles->values.empty()) {
+            std::ostringstream diameter;
+            diameter << nozzles->get_at(i);
+            head.nozzle_info = diameter.str();
+        }
+        heads.push_back(std::move(head));
+    }
+    return heads;
+}
+
 } // namespace
 
 AFCManager &AFCManager::instance()
 {
     static AFCManager manager;
     return manager;
+}
+
+std::shared_ptr<PrintHost> AFCManager::afc_host()
+{
+    std::shared_ptr<PrintHost> host;
+    wxGetApp().get_connect_host(host);
+    if (host || !wxGetApp().preset_bundle)
+        return host;
+
+    // Any other Klipper printer: Moonraker at the address in its printer settings.
+    // "Octo/Klipper" hosts are usually Moonraker too; a real OctoPrint just answers 404.
+    const DynamicPrintConfig &cfg  = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    const auto               *type = cfg.option<ConfigOptionEnum<PrintHostType>>("host_type");
+    if (type == nullptr || (type->value != htMoonRaker && type->value != htOctoPrint) || !cfg.has("print_host") ||
+        cfg.opt_string("print_host").empty())
+        return nullptr;
+
+    static std::shared_ptr<PrintHost> s_host;
+    static std::string                s_key;
+    const std::string key = cfg.opt_string("print_host") + "\n" + cfg.opt_string("printhost_apikey") + "\n" +
+                            cfg.opt_string("printhost_cafile");
+    if (!s_host || s_key != key) {
+        DynamicPrintConfig moonraker = cfg;
+        s_host = std::make_shared<Moonraker>(&moonraker);
+        s_key  = key;
+    }
+    return s_host;
+}
+
+std::string AFCManager::host_key(const std::shared_ptr<PrintHost> &host)
+{
+    if (!host)
+        return {};
+    const std::string sn = host->get_sn();
+    return sn.empty() ? host->get_host() : sn;
 }
 
 void AFCManager::refresh_async(const std::shared_ptr<PrintHost> &host, Callback done)
@@ -134,7 +212,7 @@ void AFCManager::refresh_async(const std::shared_ptr<PrintHost> &host, Callback 
         std::lock_guard<std::mutex> lock(m_mutex);
         m_refreshing = true;
     }
-    const std::string sn  = host->get_sn();
+    const std::string sn  = host_key(host);
     auto              job = std::make_shared<RefreshJob>();
     job->host             = host;
     job->done             = [this, sn, done](AFCProtocol::Snapshot snapshot) {
@@ -172,7 +250,7 @@ bool AFCManager::refresh_blocking(const std::shared_ptr<PrintHost> &host, int ti
         BOOST_LOG_TRIVIAL(warning) << "AFC: refresh timed out after " << timeout_ms << " ms";
         std::lock_guard<std::mutex> lock(m_mutex);
         m_refreshing = false;
-        return m_snapshot.present && m_sn == host->get_sn();
+        return m_snapshot.present && m_sn == host_key(host);
     }
     return future.get();
 }
@@ -185,17 +263,28 @@ void AFCManager::request_refresh(const std::shared_ptr<PrintHost> &host, std::ch
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_refreshing)
             return;
-        if (m_sn == host->get_sn() && std::chrono::steady_clock::now() - m_updated < max_age)
+        if (m_sn == host_key(host) && std::chrono::steady_clock::now() - m_updated < max_age)
             return;
     }
     refresh_async(host, [](bool) {
         wxGetApp().CallAfter([] {
-            AFCManager &self = AFCManager::instance();
-            if (self.m_toolheads.empty() || !wxGetApp().preset_bundle)
+            AFCManager   &self   = AFCManager::instance();
+            PresetBundle *bundle = wxGetApp().preset_bundle;
+            if (!bundle)
+                return;
+            std::shared_ptr<PrintHost> device;
+            wxGetApp().get_connect_host(device);
+            // The U1's device page pushes its toolheads first; until it has, leave its slots alone.
+            if (device && self.m_toolheads.empty())
                 return;
             const std::string before = self.m_applied_key;
-            if (self.reapply_machine_filaments(*wxGetApp().preset_bundle) && self.m_applied_key != before)
+            if (self.reapply_machine_filaments(*bundle)) {
+                if (self.m_applied_key != before)
+                    wxGetApp().load_current_presets();
+            } else if (!device && self.drop_machine_filaments(*bundle)) {
+                // AFC gone from a printer with no device page of its own: no machine filaments left.
                 wxGetApp().load_current_presets();
+            }
         });
     });
 }
@@ -236,10 +325,9 @@ bool AFCManager::apply_machine_filaments(PresetBundle &bundle, const std::vector
 
 bool AFCManager::reapply_machine_filaments(PresetBundle &bundle)
 {
-    std::shared_ptr<PrintHost> host;
-    wxGetApp().get_connect_host(host);
-    const AFCProtocol::Snapshot snap = snapshot();
-    if (!host || !snap.present || snap.lanes.empty() || printer_sn() != host->get_sn())
+    const std::shared_ptr<PrintHost> host = afc_host();
+    const AFCProtocol::Snapshot      snap = snapshot();
+    if (!host || !snap.present || snap.lanes.empty() || printer_sn() != host_key(host))
         return false;
 
     const std::vector<AFCProtocol::ToolSlot> slots = AFCProtocol::tool_slots(snap);
@@ -248,6 +336,9 @@ bool AFCManager::reapply_machine_filaments(PresetBundle &bundle)
     // First AFC apply without a device-page push: the bundle still holds the toolhead slots.
     if (m_toolheads.empty() && m_applied_key.empty())
         m_toolheads = bundle.m_connect_machine_info_list;
+    // No device page reporting toolheads (any printer but the U1): take them from the printer settings.
+    if (m_toolheads.empty())
+        m_toolheads = preset_toolheads(bundle, snap);
 
     std::vector<ConnectMachineInfo>                    infos;
     std::map<int, std::pair<std::string, std::string>> filaments;
@@ -271,6 +362,17 @@ bool AFCManager::reapply_machine_filaments(PresetBundle &bundle)
     bundle.m_connect_machine_info_list = std::move(infos);
     bundle.machine_filaments           = std::move(filaments);
     m_applied_key                      = slots_key(snap);
+    return true;
+}
+
+bool AFCManager::drop_machine_filaments(PresetBundle &bundle)
+{
+    if (m_applied_key.empty())
+        return false;
+    bundle.machine_filaments.clear();
+    bundle.m_connect_machine_info_list.clear();
+    m_applied_key.clear();
+    m_toolheads.clear();
     return true;
 }
 
@@ -323,14 +425,13 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
 
 json AFCManager::page_state(bool include_project) const
 {
-    std::shared_ptr<PrintHost> host;
-    wxGetApp().get_connect_host(host);
+    const std::shared_ptr<PrintHost> host = afc_host();
 
     const AFCProtocol::Snapshot snap = snapshot();
     json state;
     state["connected"] = host != nullptr;
     state["afc"]       = AFCProtocol::to_json(snap);
-    if (!host || printer_sn() != host->get_sn())
+    if (!host || printer_sn() != host_key(host))
         state["afc"]["present"] = false;
 
     if (include_project) {
@@ -356,13 +457,23 @@ void AFCManager::send_gcode(const std::shared_ptr<PrintHost> &host, const std::v
         done("");
         return;
     }
-    host->async_send_gcodes(gcode, [done](const json &res) {
-        if (res.is_null())
+    std::string script;
+    for (const std::string &line : gcode)
+        script += (script.empty() ? "" : "\n") + line;
+    host->async_jsonrpc_call("printer.gcode.script", json{{"script", script}}, [done](const json &res) {
+        if (res.is_null()) {
             done("The printer did not take the command");
-        else if (res.is_object() && res.count("error"))
-            done(res["error"].is_string() ? res["error"].get<std::string>() : res["error"].dump());
-        else
+        } else if (res.is_object() && res.count("error")) {
+            const json &err = res["error"];
+            if (err.is_string())
+                done(err.get<std::string>());
+            else if (err.is_object() && err.contains("message") && err["message"].is_string())
+                done(err["message"].get<std::string>());
+            else
+                done(err.dump());
+        } else {
             done("");
+        }
     });
 }
 

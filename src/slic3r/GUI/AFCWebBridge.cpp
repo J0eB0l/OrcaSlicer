@@ -18,12 +18,7 @@ namespace GUI {
 
 namespace {
 
-std::shared_ptr<PrintHost> connected_host()
-{
-    std::shared_ptr<PrintHost> host;
-    wxGetApp().get_connect_host(host);
-    return host;
-}
+std::shared_ptr<PrintHost> connected_host() { return AFCManager::afc_host(); }
 
 } // namespace
 
@@ -32,6 +27,7 @@ const std::unordered_set<std::string> &SSWCP_AFC_Instance::commands()
     static const std::unordered_set<std::string> list = {
         "sw_AFC_GetState",     "sw_AFC_EditLane",           "sw_AFC_LaneAction",     "sw_AFC_ApplyMapping",
         "sw_AFC_SyncToSlicer", "sw_AFC_OpenSpoolman",       "sw_AFC_FinishPrintMapping", "sw_AFC_SetPanelVisible",
+        "sw_AFC_Dry",
     };
     return list;
 }
@@ -55,6 +51,8 @@ void SSWCP_AFC_Instance::process()
             sw_AFC_FinishPrintMapping();
         else if (m_cmd == "sw_AFC_SetPanelVisible")
             sw_AFC_SetPanelVisible();
+        else if (m_cmd == "sw_AFC_Dry")
+            sw_AFC_Dry();
         else
             fail("unknown command");
     } catch (const std::exception &e) {
@@ -143,6 +141,19 @@ void SSWCP_AFC_Instance::sw_AFC_LaneAction()
                                  AFCManager::send_gcode(host, {gcode},
                                                         [self](const std::string &err) { self->reply_state(true, false, err); });
                              });
+}
+
+void SSWCP_AFC_Instance::sw_AFC_Dry()
+{
+    auto host = connected_host();
+    if (!host)
+        return fail("The printer is not connected");
+    const std::string unit = m_param_data.value("unit", "");
+    std::string       gcode, error;
+    if (!AFCProtocol::build_dry_gcode(AFCManager::instance().snapshot(), unit, m_param_data, gcode, error))
+        return fail(error);
+    auto self = std::static_pointer_cast<SSWCP_AFC_Instance>(shared_from_this());
+    AFCManager::send_gcode(host, {gcode}, [self](const std::string &err) { self->reply_state(true, false, err); });
 }
 
 void SSWCP_AFC_Instance::sw_AFC_ApplyMapping()

@@ -46,6 +46,10 @@ public:
     // Get printer information
     bool get_machine_info(const std::vector<std::pair<std::string, std::vector<std::string>>>& targets, nlohmann::json& response) override;
 
+    // Moonraker JSON-RPC over plain HTTP, for any Klipper printer reached by its
+    // Moonraker URL. Replies are shaped like the MQTT ones: {"data": result} or {"error": ...}.
+    void async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback) override;
+
     // Configuration getters
     bool has_auto_discovery() const override { return true; }
     bool can_test() const override { return true; }

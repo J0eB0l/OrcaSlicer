@@ -259,18 +259,18 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
 
 void PrinterWebView::OnAfcTimer(wxTimerEvent&)
 {
-    std::shared_ptr<PrintHost> host;
-    wxGetApp().get_connect_host(host);
-    const bool device_page = is_u1_device_page();
-    if (!host || !device_page) {
-        if (m_afc_detected) {
-            m_afc_detected = false;
-            update_afc_layout();
-        }
-        return;
+    // AFC rides along with any printer page: the U1's device page or a Klipper
+    // printer's own web UI (Fluidd, Mainsail). Not the "no connection" page.
+    const std::shared_ptr<PrintHost> host = AFCManager::afc_host();
+    const wxString url         = m_browser ? m_browser->GetCurrentURL() : wxString();
+    const bool     device_page = is_u1_device_page() ||
+                             (!url.empty() && url.find("flutter_web") == wxString::npos && url.find("missing_connection") == wxString::npos);
+    if (host) {
+        // Read often while the page is in front; in the background just keep the slicer's slots current.
+        AFCManager::instance().request_refresh(host, std::chrono::seconds(IsShownOnScreen() ? 15 : 60));
     }
-    AFCManager::instance().request_refresh(host, std::chrono::seconds(15));
-    const bool detected = AFCManager::instance().has_afc() && AFCManager::instance().printer_sn() == host->get_sn();
+    const bool detected = host && device_page && AFCManager::instance().has_afc() &&
+                          AFCManager::instance().printer_sn() == AFCManager::host_key(host);
     if (detected != m_afc_detected) {
         m_afc_detected = detected;
         update_afc_layout();

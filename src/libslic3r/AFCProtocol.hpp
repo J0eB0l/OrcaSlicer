@@ -55,11 +55,33 @@ struct Lane
     bool has_filament() const { return prep || load || tool_loaded; }
 };
 
+/// A unit's filament dryer (ACE / ACE 2 Pro, Bambu AMS 2 Pro and AMS HT
+/// through BridgeBox). AFC's webhook carries none of this; it comes from the
+/// unit's own Klipper object (see dryer_objects_query()).
+struct Dryer
+{
+    std::string kind;              ///< "ace" or "bambu": which commands drive it
+    std::string model;             ///< e.g. "ACE2", "ams2", "ht"
+    bool        online{true};
+    bool        drying{false};
+    bool        rotate{false};     ///< spools turn while drying
+    double      max_temp{0};       ///< hottest the unit allows, C
+    double      target{0};         ///< target C while drying
+    double      temperature{-1};   ///< inside the unit, C; -1 unknown
+    double      humidity{-1};      ///< %RH; -1 unknown
+    int         remaining_s{0};
+    int         duration_s{0};
+    std::string state;             ///< the unit's own dryer state text
+    std::string note;              ///< why it cannot dry right now, or what it reported
+};
+
 struct Unit
 {
     std::string              name;
     std::string              type;
     std::vector<std::string> lanes; ///< lane names in AFC order
+    bool                     has_dryer{false};
+    Dryer                    dryer;
 };
 
 struct Snapshot
@@ -102,6 +124,20 @@ std::vector<std::string> lane_object_names(const nlohmann::json &objects_list, c
 /// Build a snapshot from a `printer.objects.query` status map holding the
 /// "AFC" object and the per-lane objects named by lane_object_names().
 bool parse_objects_status(const nlohmann::json &status, Snapshot &out);
+
+/// Klipper objects to query for unit dryers: {"AFC_ACE2 Ace2_1": [fields], ...}
+/// for every ACE / Bambu unit with lanes. Empty object when there are none.
+nlohmann::json dryer_objects_query(const Snapshot &snapshot);
+
+/// Read a `printer.objects.query` status map for the objects named by
+/// dryer_objects_query() into the units' dryer info.
+void merge_dryer_status(const nlohmann::json &status, Snapshot &out);
+
+/// G-code to start or stop a unit's dryer. `request` holds action
+/// ("start"/"stop"), temp (C), minutes and rotate (bool). Validated against
+/// the unit's limits; returns false and sets `error` otherwise.
+bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit, const nlohmann::json &request, std::string &gcode,
+                     std::string &error);
 
 /// Fill blanks (vendor, temps, Spoolman id, extruder index, weights) from the
 /// Moonraker "lane_data" database namespace ({"T0": {...}, ...}). Values the

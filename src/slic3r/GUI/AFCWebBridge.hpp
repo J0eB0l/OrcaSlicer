@@ -22,6 +22,7 @@ namespace GUI {
 //   sw_AFC_OpenSpoolman      {spool_id}                  opens the spool in Spoolman
 //   sw_AFC_FinishPrintMapping {action}                   "continue" | "cancel" (print step)
 //   sw_AFC_SetPanelVisible   {visible}                   shows/hides the Device-tab panel
+//   sw_AFC_Dry               {unit, action, temp?, minutes?, rotate?}  start / stop a unit dryer
 class SSWCP_AFC_Instance : public SSWCP_Instance
 {
 public:
@@ -42,6 +43,7 @@ private:
     void sw_AFC_OpenSpoolman();
     void sw_AFC_FinishPrintMapping();
     void sw_AFC_SetPanelVisible();
+    void sw_AFC_Dry();
 
     // Answer on the UI thread with the current page state (after a refresh when asked).
     void reply_state(bool refresh, bool include_project, const std::string &error = "");

@@ -244,3 +244,132 @@ TEST_CASE("lane actions check the lane state", "[AFCProtocol]")
     CHECK_FALSE(AFCProtocol::build_lane_action_gcode(s, "lane1", "purge", g, err));
     CHECK_FALSE(AFCProtocol::build_lane_action_gcode(s, "lane1;M112", "load", g, err));
 }
+
+TEST_CASE("webhook units and lanes come out in natural order", "[AFCProtocol]")
+{
+    // Printer 1's layout: JSON key order would give AMS_1, Ace2_1, Bambu..., lane10 before lane8.
+    json afc;
+    afc["Ace2_1"]["system"]   = {{"type", "ACE2"}};
+    afc["Ace2_1"]["lane0"]    = lane_status("lane0", "Ace2_1", 1, {"T0"}, "extruder", "", "PLA", true);
+    afc["AMS_1"]["system"]    = {{"type", "OpenAMS"}};
+    afc["AMS_1"]["lane4"]     = lane_status("lane4", "AMS_1", 1, {"T4"}, "extruder4", "", "", false);
+    afc["Turtle_1"]["system"] = {{"type", "Box_Turtle"}};
+    for (int i : {8, 9, 10, 11})
+        afc["Turtle_1"]["lane" + std::to_string(i)] =
+            lane_status("lane" + std::to_string(i), "Turtle_1", i - 7, {"T" + std::to_string(i)}, "extruder5", "", "", false);
+    afc["Bambu_AMS_1"]["system"]    = {{"type", "BambuAMS"}};
+    afc["Bambu_AMS_1"]["lane12"]    = lane_status("lane12", "Bambu_AMS_1", 1, {"T12"}, "extruder", "#0A2989", "PLA", true);
+    afc["Bambu_AMS_2"]["system"]    = {{"type", "BambuAMS"}}; // unclaimed BridgeBox spare
+    afc["Tools"]["system"]          = {{"type", "Toolchanger"}};
+    afc["system"]                   = {{"version", "1.2.7"}};
+
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(json{{"status:", {{"AFC", afc}}}}, s));
+    std::vector<std::string> units;
+    for (const auto &u : s.units)
+        units.push_back(u.name);
+    CHECK(units == std::vector<std::string>{"Ace2_1", "AMS_1", "Turtle_1", "Bambu_AMS_1", "Bambu_AMS_2", "Tools"});
+    CHECK(s.units[2].lanes == std::vector<std::string>{"lane8", "lane9", "lane10", "lane11"});
+    REQUIRE(s.lanes.size() == 7);
+    CHECK(s.lanes[2].name == "lane8");
+    CHECK(s.lanes[5].name == "lane11");
+    CHECK(s.lanes[6].name == "lane12");
+}
+
+TEST_CASE("dryers are read from ACE and Bambu unit objects", "[AFCProtocol]")
+{
+    json afc;
+    afc["Ace2_1"]["system"]         = {{"type", "ACE2"}};
+    afc["Ace2_1"]["lane0"]          = lane_status("lane0", "Ace2_1", 1, {"T0"}, "extruder", "", "PLA", true);
+    afc["Bambu_AMS_1"]["system"]    = {{"type", "BambuAMS"}};
+    afc["Bambu_AMS_1"]["lane12"]    = lane_status("lane12", "Bambu_AMS_1", 1, {"T12"}, "extruder", "", "PLA", true);
+    afc["Bambu_AMS_HT_1"]["system"] = {{"type", "BambuAMS"}};
+    afc["Bambu_AMS_HT_1"]["lane20"] = lane_status("lane20", "Bambu_AMS_HT_1", 1, {"T20"}, "extruder", "", "PA", true);
+    afc["Turtle_1"]["system"]       = {{"type", "Box_Turtle"}};
+    afc["Turtle_1"]["lane8"]        = lane_status("lane8", "Turtle_1", 1, {"T8"}, "extruder5", "", "", false);
+    afc["Bambu_AMS_2"]["system"]    = {{"type", "BambuAMS"}}; // no lanes: not queried
+
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(json{{"status:", {{"AFC", afc}}}}, s));
+
+    const json q = AFCProtocol::dryer_objects_query(s);
+    CHECK(q.size() == 3);
+    CHECK(q.contains("AFC_ACE2 Ace2_1"));
+    CHECK(q.contains("AFC_BambuAMS Bambu_AMS_1"));
+    CHECK(q.contains("AFC_BambuAMS Bambu_AMS_HT_1"));
+
+    json status;
+    status["AFC_ACE2 Ace2_1"] = {{"ace_connected", true},     {"ace_temp", 41.5},          {"ace_humidity", 18},
+                                 {"ace_dryer", "keeping"},    {"ace_dryer_target", 55},    {"ace_dryer_remain", 5400},
+                                 {"ace_dryer_duration", 14400}, {"ace_dry_rotate", false}};
+    status["AFC_BambuAMS Bambu_AMS_1"] = {{"has_heater", true},  {"dry_max_temp", 65}, {"drying", false},
+                                          {"temperature", 27.0}, {"humidity", 31.0},   {"ams_model", "ams2"},
+                                          {"bridge_online", true}, {"dry_error", ""}};
+    status["AFC_BambuAMS Bambu_AMS_HT_1"] = {{"has_heater", true}, {"dry_max_temp", 85}, {"drying", true},
+                                             {"dry_target", 80},   {"dry_remaining", 3600}, {"dry_minutes", 720},
+                                             {"ams_model", "ht"},  {"dry_note", "spools turning"}, {"dry_rotate", true}};
+    AFCProtocol::merge_dryer_status(json{{"status", status}}, s);
+
+    auto unit = [&](const std::string &name) -> const AFCProtocol::Unit & {
+        for (const auto &u : s.units)
+            if (u.name == name)
+                return u;
+        FAIL("no unit " << name);
+        return s.units.front();
+    };
+    REQUIRE(unit("Ace2_1").has_dryer);
+    CHECK(unit("Ace2_1").dryer.kind == "ace");
+    CHECK(unit("Ace2_1").dryer.drying);
+    CHECK(unit("Ace2_1").dryer.max_temp == 70);
+    CHECK(unit("Ace2_1").dryer.duration_s == 14400);
+    CHECK(unit("Ace2_1").dryer.remaining_s == 5400);
+    REQUIRE(unit("Bambu_AMS_1").has_dryer);
+    CHECK_FALSE(unit("Bambu_AMS_1").dryer.drying);
+    CHECK(unit("Bambu_AMS_1").dryer.max_temp == 65);
+    REQUIRE(unit("Bambu_AMS_HT_1").has_dryer);
+    CHECK(unit("Bambu_AMS_HT_1").dryer.drying);
+    CHECK(unit("Bambu_AMS_HT_1").dryer.duration_s == 720 * 60);
+    CHECK(unit("Bambu_AMS_HT_1").dryer.note == "spools turning");
+    CHECK_FALSE(unit("Turtle_1").has_dryer);
+
+    // A Bambu AMS without a heater (AMS 1) has no dryer.
+    AFCProtocol::merge_dryer_status(json{{"AFC_BambuAMS Bambu_AMS_1", {{"has_heater", false}}}}, s);
+    CHECK(unit("Bambu_AMS_1").has_dryer); // unchanged: no-heater rows are skipped, not cleared
+
+    const json j = AFCProtocol::to_json(s);
+    CHECK(j["units"][0]["dryer"]["kind"] == "ace");
+}
+
+TEST_CASE("dry commands are validated per unit", "[AFCProtocol]")
+{
+    json afc;
+    afc["Ace2_1"]["system"]      = {{"type", "ACE2"}};
+    afc["Ace2_1"]["lane0"]       = lane_status("lane0", "Ace2_1", 1, {"T0"}, "extruder", "", "PLA", true);
+    afc["Bambu_AMS_1"]["system"] = {{"type", "BambuAMS"}};
+    afc["Bambu_AMS_1"]["lane12"] = lane_status("lane12", "Bambu_AMS_1", 1, {"T12"}, "extruder", "", "PLA", true);
+    afc["Turtle_1"]["system"]    = {{"type", "Box_Turtle"}};
+    afc["Turtle_1"]["lane8"]     = lane_status("lane8", "Turtle_1", 1, {"T8"}, "extruder5", "", "", false);
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(json{{"status:", {{"AFC", afc}}}}, s));
+    json status;
+    status["AFC_ACE2 Ace2_1"]          = {{"ace_dryer", "stop"}};
+    status["AFC_BambuAMS Bambu_AMS_1"] = {{"has_heater", true}, {"dry_max_temp", 65}};
+    AFCProtocol::merge_dryer_status(status, s);
+
+    std::string g, err;
+    CHECK(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "start"}, {"temp", 55}, {"minutes", 240}, {"rotate", true}}, g, err));
+    CHECK(g == "ACE_DRY UNIT=Ace2_1 TEMP=55 DURATION=240 ROTATE=1");
+    CHECK(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "stop"}}, g, err));
+    CHECK(g == "ACE_DRY_STOP UNIT=Ace2_1");
+    CHECK(AFCProtocol::build_dry_gcode(s, "Bambu_AMS_1", json{{"action", "start"}, {"temp", 65}, {"minutes", 480}}, g, err));
+    CHECK(g == "AFC_BAMBU_HEATER_START UNIT=Bambu_AMS_1 TEMP=65 TIME=480 ROTATE=0");
+    CHECK(AFCProtocol::build_dry_gcode(s, "Bambu_AMS_1", json{{"action", "stop"}}, g, err));
+    CHECK(g == "AFC_BAMBU_HEATER_STOP UNIT=Bambu_AMS_1");
+
+    CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Bambu_AMS_1", json{{"action", "start"}, {"temp", 80}, {"minutes", 480}}, g, err)); // over 65
+    CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "start"}, {"temp", 55}, {"minutes", 0}}, g, err));
+    CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "start"}, {"temp", "55;M112"}, {"minutes", 60}}, g, err));
+    CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Turtle_1", json{{"action", "start"}, {"temp", 50}, {"minutes", 60}}, g, err)); // no dryer
+    CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Ace2_1;M112", json{{"action", "stop"}}, g, err));
+    CHECK_FALSE(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "boost"}}, g, err));
+}

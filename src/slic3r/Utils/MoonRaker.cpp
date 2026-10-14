@@ -385,6 +385,78 @@ bool Moonraker::send_gcodes(const std::vector<std::string>& codes, std::string& 
     return res;
 }
 
+void Moonraker::async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback)
+{
+    // The calls the AFC integration makes map onto Moonraker's REST routes;
+    // anything else goes through Moonraker's /server/jsonrpc.
+    const json  p    = params.is_object() ? params : json::object();
+    std::string path;
+    std::string body;
+    bool        post = true;
+    if (method == "printer.afc.status") {
+        path = "printer/afc/status";
+        post = false;
+    } else if (method == "printer.objects.list") {
+        path = "printer/objects/list";
+        post = false;
+    } else if (method == "printer.objects.query") {
+        path = "printer/objects/query";
+        body = json{{"objects", p.value("objects", json::object())}}.dump();
+    } else if (method == "printer.gcode.script") {
+        path = "printer/gcode/script";
+        body = json{{"script", p.value("script", std::string())}}.dump();
+    } else if (method == "server.database.get_item") {
+        path = "server/database/item?namespace=" + Http::url_encode(p.value("namespace", std::string()));
+        if (p.contains("key") && p["key"].is_string())
+            path += "&key=" + Http::url_encode(p["key"].get<std::string>());
+        post = false;
+    } else {
+        path = "server/jsonrpc";
+        body = json{{"jsonrpc", "2.0"}, {"method", method}, {"params", p}, {"id", 1}}.dump();
+    }
+
+    auto http = post ? Http::post(make_url(path)) : Http::get(make_url(path));
+    set_auth(http);
+    if (post) {
+        http.header("Content-Type", "application/json");
+        http.set_post_body(body);
+    }
+    http.timeout_connect(5)
+        .timeout_max(30)
+        .on_complete([callback, method](std::string body, unsigned) {
+            if (!callback)
+                return;
+            json res;
+            try {
+                res = json::parse(body);
+            } catch (const std::exception&) {
+                callback(json{{"error", "unreadable reply to " + method}});
+                return;
+            }
+            if (res.is_object() && res.contains("result"))
+                callback(json{{"data", res["result"]}});
+            else if (res.is_object() && res.contains("error"))
+                callback(json{{"error", res["error"]}});
+            else
+                callback(json{{"data", res}});
+        })
+        .on_error([callback, method](std::string body, std::string error, unsigned status) {
+            BOOST_LOG_TRIVIAL(warning) << "[Moonraker] " << method << " failed, HTTP status " << status << ": " << error;
+            if (!callback)
+                return;
+            // Moonraker puts Klipper's own message (e.g. "Must home axis first") in error.message.
+            std::string message = error;
+            try {
+                const json res = json::parse(body);
+                if (res.is_object() && res.contains("error") && res["error"].is_object() && res["error"].contains("message") &&
+                    res["error"]["message"].is_string())
+                    message = res["error"]["message"].get<std::string>();
+            } catch (const std::exception&) {}
+            callback(json{{"error", message}, {"status", status}});
+        })
+        .perform();
+}
+
 bool Moonraker::test(wxString& msg) const
 {
     auto& wcp_loger = GUI::WCP_Logger::getInstance();    

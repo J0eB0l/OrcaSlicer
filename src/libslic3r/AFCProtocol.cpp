@@ -212,6 +212,63 @@ bool safe_value(const std::string &v, size_t max_len)
     return true;
 }
 
+// "lane9" < "lane10": digit runs compare as numbers.
+bool natural_less(const std::string &a, const std::string &b)
+{
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (std::isdigit((unsigned char) a[i]) && std::isdigit((unsigned char) b[j])) {
+            size_t ie = i, je = j;
+            while (ie < a.size() && std::isdigit((unsigned char) a[ie]))
+                ++ie;
+            while (je < b.size() && std::isdigit((unsigned char) b[je]))
+                ++je;
+            const std::string na = a.substr(i, ie - i), nb = b.substr(j, je - j);
+            const size_t      za = na.find_first_not_of('0'), zb = nb.find_first_not_of('0');
+            const std::string ta = za == std::string::npos ? "" : na.substr(za);
+            const std::string tb = zb == std::string::npos ? "" : nb.substr(zb);
+            if (ta.size() != tb.size())
+                return ta.size() < tb.size();
+            if (ta != tb)
+                return ta < tb;
+            i = ie;
+            j = je;
+        } else {
+            if (a[i] != b[j])
+                return a[i] < b[j];
+            ++i;
+            ++j;
+        }
+    }
+    return a.size() - i < b.size() - j;
+}
+
+// The webhook arrives as a JSON object, so units and lanes come out in key
+// order (lane10 before lane8). Put lanes in natural order inside each unit,
+// units in the order of their first lane, and lane-less units (a toolchanger
+// entry, unclaimed BridgeBox spares) last.
+void order_snapshot(Snapshot &out)
+{
+    for (Unit &u : out.units)
+        std::sort(u.lanes.begin(), u.lanes.end(), natural_less);
+    std::stable_sort(out.units.begin(), out.units.end(), [](const Unit &a, const Unit &b) {
+        if (a.lanes.empty() != b.lanes.empty())
+            return b.lanes.empty();
+        if (a.lanes.empty())
+            return natural_less(a.name, b.name);
+        return natural_less(a.lanes.front(), b.lanes.front());
+    });
+    std::vector<Lane> ordered;
+    ordered.reserve(out.lanes.size());
+    for (const Unit &u : out.units)
+        for (const std::string &name : u.lanes)
+            for (Lane &l : out.lanes)
+                if (l.name == name && l.unit == u.name)
+                    ordered.push_back(l);
+    if (ordered.size() == out.lanes.size())
+        out.lanes = std::move(ordered);
+}
+
 std::string format_number(double v)
 {
     char buf[32];
@@ -328,6 +385,7 @@ bool parse_status_endpoint(const json &result, Snapshot &out)
         }
         out.units.push_back(std::move(unit));
     }
+    order_snapshot(out);
     out.present = true;
     return true;
 }
@@ -383,7 +441,10 @@ bool parse_objects_status(const json &status, Snapshot &out)
         for (const std::string &entry : string_list(*it)) {
             auto [type, name] = split_unit_entry(entry);
             unit_types[name] = type;
-            out.units.push_back(Unit{name, type, {}});
+            Unit unit;
+            unit.name = name;
+            unit.type = type;
+            out.units.push_back(std::move(unit));
         }
 
     std::vector<std::string> lane_order;
@@ -414,7 +475,11 @@ bool parse_objects_status(const json &status, Snapshot &out)
                 placed = true;
             }
         if (!placed) {
-            out.units.push_back(Unit{lane.unit, lane.unit_type, {name}});
+            Unit unit;
+            unit.name  = lane.unit;
+            unit.type  = lane.unit_type;
+            unit.lanes = {name};
+            out.units.push_back(std::move(unit));
         }
         out.lanes.push_back(std::move(lane));
     }
@@ -474,6 +539,175 @@ void merge_lane_data(const json &lane_data, Snapshot &out)
     }
 }
 
+namespace {
+
+const std::vector<std::string> &ace_dryer_fields()
+{
+    static const std::vector<std::string> f = {"ace_connected",   "ace_temp",         "ace_humidity",       "ace_dryer",
+                                               "ace_dryer_target", "ace_dryer_remain", "ace_dryer_duration", "ace_dry_rotate"};
+    return f;
+}
+
+const std::vector<std::string> &bambu_dryer_fields()
+{
+    static const std::vector<std::string> f = {"has_heater", "dry_max_temp", "drying",      "dry_remaining", "dry_minutes",
+                                               "dry_target", "dry_rotate",   "dry_state",   "dry_error",     "dry_note",
+                                               "dry_blocked", "temperature", "humidity",    "ams_model",     "bridge_online"};
+    return f;
+}
+
+bool is_ace_type(const std::string &type) { return upper(type).compare(0, 3, "ACE") == 0; }
+bool is_bambu_type(const std::string &type) { return upper(type).compare(0, 5, "BAMBU") == 0; }
+
+std::string note_from(const json &obj, const char *key)
+{
+    auto it = obj.find(key);
+    if (it == obj.end() || it->is_null())
+        return {};
+    if (it->is_string())
+        return it->get<std::string>();
+    if (it->is_boolean())
+        return it->get<bool>() ? std::string("Drying is blocked right now") : std::string();
+    return {};
+}
+
+} // namespace
+
+json dryer_objects_query(const Snapshot &snapshot)
+{
+    json q = json::object();
+    for (const Unit &u : snapshot.units) {
+        if (u.lanes.empty() || u.type.empty())
+            continue;
+        if (is_ace_type(u.type))
+            q["AFC_" + u.type + " " + u.name] = ace_dryer_fields();
+        else if (is_bambu_type(u.type))
+            q["AFC_" + u.type + " " + u.name] = bambu_dryer_fields();
+    }
+    return q;
+}
+
+void merge_dryer_status(const json &status, Snapshot &out)
+{
+    const json *st = &status;
+    if (auto it = status.find("status"); it != status.end() && it->is_object())
+        st = &*it;
+    if (!st->is_object())
+        return;
+    for (auto it = st->begin(); it != st->end(); ++it) {
+        const std::string &key = it.key();
+        const size_t       sp  = key.rfind(' ');
+        if (key.compare(0, 4, "AFC_") != 0 || sp == std::string::npos || !it->is_object() || it->empty())
+            continue;
+        const std::string prefix = key.substr(4, sp - 4);
+        const std::string name   = key.substr(sp + 1);
+        Unit *unit = nullptr;
+        for (Unit &u : out.units)
+            if (u.name == name)
+                unit = &u;
+        if (unit == nullptr)
+            continue;
+        const json &o = *it;
+        Dryer       d;
+        if (is_ace_type(prefix)) {
+            d.kind        = "ace";
+            d.model       = prefix;
+            d.online      = o.contains("ace_connected") ? bool_field(o, "ace_connected") : true;
+            d.state       = str_field(o, "ace_dryer");
+            const std::string state = upper(d.state);
+            d.drying      = !state.empty() && state != "STOP" && state != "STOPPED" && state != "STOPPING" && state != "IDLE" &&
+                       state.find("ERROR") == std::string::npos;
+            d.target      = num_field(o, "ace_dryer_target", 0);
+            d.remaining_s = int(num_field(o, "ace_dryer_remain", 0));
+            // ACE 2 reports the duration in seconds, the first ACE in minutes.
+            const double duration = num_field(o, "ace_dryer_duration", 0);
+            d.duration_s  = int(upper(prefix) == "ACE" ? duration * 60 : duration);
+            d.temperature = num_field(o, "ace_temp", -1);
+            d.humidity    = num_field(o, "ace_humidity", -1);
+            d.rotate      = bool_field(o, "ace_dry_rotate");
+            d.max_temp    = upper(prefix) == "ACE" ? 55 : 70;
+            if (state.find("ERROR") != std::string::npos)
+                d.note = "Dryer reports " + d.state;
+        } else if (is_bambu_type(prefix)) {
+            if (o.contains("has_heater") && !bool_field(o, "has_heater"))
+                continue; // AMS 1 / AMS lite: no heater
+            d.kind        = "bambu";
+            d.model       = str_field(o, "ams_model");
+            d.online      = o.contains("bridge_online") ? bool_field(o, "bridge_online") : true;
+            d.drying      = bool_field(o, "drying");
+            d.target      = num_field(o, "dry_target", 0);
+            d.remaining_s = int(num_field(o, "dry_remaining", 0));
+            d.duration_s  = int(num_field(o, "dry_minutes", 0) * 60);
+            d.temperature = num_field(o, "temperature", -1);
+            d.humidity    = num_field(o, "humidity", -1);
+            d.rotate      = bool_field(o, "dry_rotate");
+            d.max_temp    = num_field(o, "dry_max_temp", 0);
+            d.state       = str_field(o, "dry_state");
+            for (const char *k : {"dry_error", "dry_blocked", "dry_note"})
+                if (d.note.empty())
+                    d.note = note_from(o, k);
+            if (d.max_temp <= 0)
+                continue; // no heater reported
+        } else {
+            continue;
+        }
+        unit->has_dryer = true;
+        unit->dryer     = std::move(d);
+    }
+}
+
+bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit_name, const json &request, std::string &gcode, std::string &error)
+{
+    gcode.clear();
+    const Unit *unit = nullptr;
+    for (const Unit &u : snapshot.units)
+        if (u.name == unit_name)
+            unit = &u;
+    if (unit == nullptr || !is_safe_lane_name(unit_name)) {
+        error = "Unknown unit " + unit_name;
+        return false;
+    }
+    if (!unit->has_dryer) {
+        error = unit_name + " has no dryer";
+        return false;
+    }
+    const Dryer      &d      = unit->dryer;
+    const std::string action = request.is_object() ? request.value("action", std::string()) : std::string();
+    if (action == "stop") {
+        gcode = (d.kind == "ace" ? "ACE_DRY_STOP UNIT=" : "AFC_BAMBU_HEATER_STOP UNIT=") + unit_name;
+        return true;
+    }
+    if (action != "start") {
+        error = "Unknown dryer action";
+        return false;
+    }
+    const json temp_v = request.value("temp", json()), minutes_v = request.value("minutes", json());
+    if (!temp_v.is_number() || !minutes_v.is_number()) {
+        error = "Drying needs a temperature and a time";
+        return false;
+    }
+    const int temp    = int(std::lround(temp_v.get<double>()));
+    const int minutes = int(std::lround(minutes_v.get<double>()));
+    const int max     = d.max_temp > 0 ? int(d.max_temp) : 85;
+    if (temp < 35 || temp > max) {
+        error = "Temperature must be 35-" + std::to_string(max) + " C on " + unit_name;
+        return false;
+    }
+    if (minutes < 1 || minutes > 48 * 60) {
+        error = "Drying time must be 1 minute to 48 hours";
+        return false;
+    }
+    const json rotate_v = request.value("rotate", json(false));
+    const bool rotate   = rotate_v.is_boolean() ? rotate_v.get<bool>() : (rotate_v.is_number() && rotate_v.get<double>() != 0);
+    if (d.kind == "ace")
+        gcode = "ACE_DRY UNIT=" + unit_name + " TEMP=" + std::to_string(temp) + " DURATION=" + std::to_string(minutes) +
+                " ROTATE=" + (rotate ? "1" : "0");
+    else
+        gcode = "AFC_BAMBU_HEATER_START UNIT=" + unit_name + " TEMP=" + std::to_string(temp) + " TIME=" + std::to_string(minutes) +
+                " ROTATE=" + (rotate ? "1" : "0");
+    return true;
+}
+
 json to_json(const Snapshot &s)
 {
     json j;
@@ -485,8 +719,18 @@ json to_json(const Snapshot &s)
     j["current_lane"]     = s.current_lane;
     j["extruders"]        = s.extruders;
     j["units"]            = json::array();
-    for (const Unit &u : s.units)
-        j["units"].push_back({{"name", u.name}, {"type", u.type}, {"lanes", u.lanes}});
+    for (const Unit &u : s.units) {
+        json unit = {{"name", u.name}, {"type", u.type}, {"lanes", u.lanes}, {"dryer", nullptr}};
+        if (u.has_dryer) {
+            const Dryer &d = u.dryer;
+            unit["dryer"]  = {{"kind", d.kind},         {"model", d.model},       {"online", d.online},
+                              {"drying", d.drying},     {"rotate", d.rotate},     {"max_temp", d.max_temp},
+                              {"target", d.target},     {"temperature", d.temperature}, {"humidity", d.humidity},
+                              {"remaining_s", d.remaining_s}, {"duration_s", d.duration_s}, {"state", d.state},
+                              {"note", d.note}};
+        }
+        j["units"].push_back(std::move(unit));
+    }
     j["lanes"] = json::array();
     for (const Lane &l : s.lanes) {
         j["lanes"].push_back({{"name", l.name},

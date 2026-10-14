@@ -7,9 +7,9 @@
 namespace Slic3r {
 namespace GUI {
 
-// Lane-mapping step shown before the Snapmaker print dialog when the
-// connected printer runs AFC: every project filament gets an AFC lane
-// (any unit, any toolhead), applied with SET_MAP before the print starts.
+// Lane-mapping step shown before a print starts when the printer runs AFC
+// (the U1 or any other Klipper printer): every project filament gets an AFC
+// lane (any unit, any toolhead), applied with SET_MAP before the print starts.
 class AFCPrintDialog : public wxDialog
 {
 public:
@@ -22,6 +22,10 @@ public:
 
     // Called by the page bridge (sw_AFC_FinishPrintMapping).
     static void finish_active(bool proceed);
+
+    // Reads AFC from the printer and, when it has AFC, runs the mapping step.
+    // False only when the user cancelled; a printer without AFC passes straight through.
+    static bool map_lanes_before_print(wxWindow *parent);
 
 private:
     void OnScriptMessage(wxWebViewEvent &evt);

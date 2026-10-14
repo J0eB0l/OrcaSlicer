@@ -1,5 +1,6 @@
 #include "AFCPrintDialog.hpp"
 
+#include "AFCManager.hpp"
 #include "GUI_App.hpp"
 #include "HttpServer.hpp"
 #include "I18N.hpp"
@@ -7,6 +8,7 @@
 #include "Widgets/WebView.hpp"
 
 #include <wx/sizer.h>
+#include <wx/utils.h>
 
 namespace Slic3r {
 namespace GUI {
@@ -56,6 +58,22 @@ bool AFCPrintDialog::run()
     ShowModal();
     s_active = nullptr;
     return m_proceed;
+}
+
+bool AFCPrintDialog::map_lanes_before_print(wxWindow *parent)
+{
+    const std::shared_ptr<PrintHost> host = AFCManager::afc_host();
+    if (!host)
+        return true;
+    bool present = false;
+    {
+        wxBusyCursor busy;
+        present = AFCManager::instance().refresh_blocking(host, 4000);
+    }
+    if (!present)
+        return true;
+    AFCPrintDialog dialog(parent);
+    return dialog.run();
 }
 
 void AFCPrintDialog::finish_active(bool proceed)

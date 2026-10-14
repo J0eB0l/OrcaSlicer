@@ -21,15 +21,23 @@ namespace GUI {
 
 // Live view of AFC (units, lanes, T(n) map) on the connected printer.
 //
-// A U1 running AFC has as many filaments as AFC has T(n) maps, not four.
-// The manager reads AFC through the printer connection the device page
-// already made (Moonraker JSON-RPC over MQTT), keeps the last snapshot,
-// and turns it into the per-slot machine filament list the filament sync,
-// the filament combo boxes and the AFC pages use.
+// A printer running AFC has as many filaments as AFC has T(n) maps, not one
+// per toolhead. The manager reads AFC through the printer connection (the
+// U1's Moonraker JSON-RPC over MQTT, or any Klipper printer's Moonraker URL
+// from the printer settings), keeps the last snapshot, and turns it into the
+// per-slot machine filament list the filament sync, the filament combo boxes
+// and the AFC pages use.
 class AFCManager
 {
 public:
     static AFCManager &instance();
+
+    // The printer connection AFC is read through: the connected device (U1),
+    // else a Moonraker host built from the selected printer's settings.
+    // nullptr when neither exists. UI thread only.
+    static std::shared_ptr<PrintHost> afc_host();
+    // Identifies the printer behind a host: its serial number, else its address.
+    static std::string host_key(const std::shared_ptr<PrintHost> &host);
 
     using Callback = std::function<void(bool afc_present)>;
 
@@ -58,6 +66,10 @@ public:
 
     // Re-apply the last snapshot using the toolheads from the last apply. UI thread only.
     bool reapply_machine_filaments(PresetBundle &bundle);
+
+    // Undo apply_machine_filaments for a printer that has no device page of its
+    // own (the AFC was the only source of its machine filaments). UI thread only.
+    bool drop_machine_filaments(PresetBundle &bundle);
 
     // Project filaments of the current plate, with grams used and whether the
     // sliced plate uses them. UI thread only.

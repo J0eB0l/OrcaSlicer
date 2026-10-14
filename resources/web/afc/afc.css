@@ -268,8 +268,51 @@ button, input, select { font: inherit; color: inherit; }
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%) translateY(20px);
   background: #24292f; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 12px;
   opacity: 0; pointer-events: none; transition: all 0.2s; max-width: 90%; z-index: 50;
+  width: max-content; text-align: center;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.bad { background: var(--bad); }
 
 .busy { opacity: 0.6; pointer-events: none; }
+
+/* ---------- dryer ---------- */
+.unit-head .grow { flex: 1; }
+.unit-head .hint { margin-right: 4px; }
+.dry-chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid transparent; border-radius: 999px; padding: 3px 10px; font-size: 12px;
+  background: var(--warn-soft); color: var(--warn);
+}
+.dry-chip .dot { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.modal-back {
+  position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, 0.35);
+  display: flex; align-items: center; justify-content: center; padding: 14px;
+}
+.modal {
+  width: 100%; max-width: 420px; max-height: 100%; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3); padding: 14px;
+}
+.modal h2 { margin: 0 0 10px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.modal h2 .hint { margin-left: auto; font-weight: 400; }
+.dry-climate { color: var(--text-2); font-size: 12px; margin-bottom: 10px; }
+.presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+.preset {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 6px 8px; text-align: left;
+}
+.preset span { color: var(--text-3); font-size: 10px; }
+.preset:hover { border-color: var(--accent); }
+.preset.here { border-style: dashed; border-color: var(--text-3); }
+.preset.cur { border: 1px solid var(--accent); background: var(--accent-soft); }
+.field.check { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text); font-size: 12px; }
+.field.check input { width: auto; }
+.field.check .hint { flex-basis: 100%; }
+.dry-live { display: flex; align-items: center; gap: 14px; margin: 4px 0 10px; }
+.dry-big { font-size: 26px; font-weight: 650; color: var(--warn); }
+
+.dry-foot { margin-top: 10px; }
+/* A black or near-black spool would vanish on the dark surface; ring it. */
+:root.dark .spool:not(.none) { border-color: rgba(255, 255, 255, 0.28); }
