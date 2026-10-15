@@ -35,10 +35,12 @@ class AFCManager
 public:
     static AFCManager &instance();
 
-    // The printer connection AFC is read through: the connected device (U1),
-    // else a Moonraker host built from the selected printer's settings.
+    // The printer connection AFC is read through: the connected device (U1) while
+    // its preset is selected, else a Moonraker host built from the selected printer's settings.
     // nullptr when neither exists. UI thread only.
     static std::shared_ptr<PrintHost> afc_host();
+    // The connected device (U1) while its own printer preset is selected, else nullptr.
+    static std::shared_ptr<PrintHost> device_host();
     // Identifies the printer behind a host: its serial number, else its address.
     static std::string host_key(const std::shared_ptr<PrintHost> &host);
 
@@ -122,6 +124,7 @@ private:
     std::chrono::steady_clock::time_point   m_updated{};
     std::set<std::string>                   m_refreshing;     // printers (host_key) with a read on the way
     std::vector<ConnectMachineInfo>         m_toolheads;      // UI thread
+    std::string                             m_toolheads_key;  // UI thread: printer (host_key) m_toolheads came from
     std::string                             m_applied_key;    // UI thread: slots last applied
     std::map<int, FlowK>                    m_flow_k;         // by Spoolman spool id, for the printer in m_sn
     std::set<int>                           m_flow_k_reading; // spool ids with a read on the way

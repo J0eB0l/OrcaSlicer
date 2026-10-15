@@ -1780,9 +1780,7 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
 
             // AFC: a U1 running AFC has one filament per AFC T(n), not one per toolhead.
             // Replace the toolhead slots with AFC's when the printer has AFC.
-            {
-                std::shared_ptr<PrintHost> afc_host;
-                wxGetApp().get_connect_host(afc_host);
+            if (std::shared_ptr<PrintHost> afc_host = AFCManager::device_host()) {
                 AFCManager::instance().request_refresh(afc_host);
                 AFCManager::instance().apply_machine_filaments(*wxGetApp().preset_bundle, machine_nozzles);
             }

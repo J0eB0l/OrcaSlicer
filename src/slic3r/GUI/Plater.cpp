@@ -9443,13 +9443,34 @@ void Sidebar::show_sync_filament_dialog()
 
         // AFC: the pressure advance saved on each lane's spool, by the T(n) the slot was synced from.
         std::map<int, double> spool_flow_k;
-        if (afc_sync)
-            for (const AFCProtocol::ToolSlot &slot : AFCProtocol::tool_slots(AFCManager::instance().snapshot()))
+        // AFC: the material most loaded lanes carry, for the gray slots of empty lanes.
+        std::string afc_main_type = "PLA";
+        if (afc_sync) {
+            std::map<std::string, int> type_count;
+            for (const AFCProtocol::ToolSlot &slot : AFCProtocol::tool_slots(AFCManager::instance().snapshot())) {
                 spool_flow_k[slot.tool] = slot.has_filament ? slot.flow_k : -1.;
+                if (slot.has_filament && slot.type != "NONE")
+                    ++type_count[slot.type];
+                BOOST_LOG_TRIVIAL(warning) << "AFC sync: T" << slot.tool << " lane " << slot.lane << (slot.has_filament ? "" : " (empty)")
+                                           << " " << slot.vendor << " " << slot.type << " flow K " << slot.flow_k;
+            }
+            int most = 0;
+            for (const auto &[type, count] : type_count)
+                if (count > most) {
+                    most          = count;
+                    afc_main_type = type;
+                }
+        }
         int spool_pa_slots = 0;
         int spool_presets_made = 0, spool_presets_updated = 0;
 
         for (size_t i = 0; i < effective_size; ++i) {
+            // AFC: a slot kept for an empty lane is a gray Generic one, so it reads as empty.
+            if (afc_sync && (syncedData[i].m_type.empty() || syncedData[i].m_type == "NONE")) {
+                syncedData[i].m_name  = "Generic " + afc_main_type;
+                syncedData[i].m_type  = afc_main_type;
+                syncedData[i].m_color = FilamentColor::FromColors({"#808080"}, FilamentColorMode::Segment);
+            }
             std::string preset_name;
             if (Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type))
                 preset_name = matched->name;

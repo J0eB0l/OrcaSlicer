@@ -4,12 +4,14 @@
 #include "Plater.hpp"
 #include "PartPlate.hpp"
 #include "filamentsync/FilamentSyncAlgorithm.hpp"
+#include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
 #include "slic3r/Utils/MoonRaker.hpp"
 
 #include "libslic3r/Print.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/log/trivial.hpp>
 
@@ -248,6 +250,12 @@ bool apply_spool_values(const AFCProtocol::Lane &lane, DynamicPrintConfig &confi
         changed |= set_every_value(config.option<ConfigOptionFloats>("filament_density"), lane.density);
     if (lane.diameter > 0)
         changed |= set_every_value(config.option<ConfigOptionFloats>("filament_diameter"), lane.diameter);
+    // The spool's saved pressure advance, so the preset shows what the slot prints with.
+    // A slot still prints with its own spool's K when two spools share the preset.
+    if (lane.flow_k >= 0) {
+        changed |= set_every_value(config.option<ConfigOptionBools>("enable_pressure_advance"), static_cast<unsigned char>(1));
+        changed |= set_every_value(config.option<ConfigOptionFloats>("pressure_advance"), lane.flow_k);
+    }
     return changed;
 }
 
@@ -281,12 +289,26 @@ AFCManager &AFCManager::instance()
     return manager;
 }
 
-std::shared_ptr<PrintHost> AFCManager::afc_host()
+std::shared_ptr<PrintHost> AFCManager::device_host()
 {
+    if (!wxGetApp().preset_bundle)
+        return nullptr;
+    // The U1 stays connected when another printer's preset is picked. Its device
+    // page goes with its own preset, and so does reading AFC through it.
+    const auto *model = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionString>("printer_model");
+    if (model == nullptr || !boost::icontains(model->value, "Snapmaker") || !boost::icontains(model->value, "U1"))
+        return nullptr;
     std::shared_ptr<PrintHost> host;
     wxGetApp().get_connect_host(host);
-    if (host || !wxGetApp().preset_bundle)
+    return host;
+}
+
+std::shared_ptr<PrintHost> AFCManager::afc_host()
+{
+    if (std::shared_ptr<PrintHost> host = device_host())
         return host;
+    if (!wxGetApp().preset_bundle)
+        return nullptr;
 
     // Any other Klipper printer: Moonraker at the address in its printer settings.
     // "Octo/Klipper" hosts are usually Moonraker too; a real OctoPrint just answers 404.
@@ -364,10 +386,12 @@ void AFCManager::finish_refresh(AFCProtocol::Snapshot snapshot, const std::strin
 void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::string &sn)
 {
     std::vector<int> spools;
+    std::string      spoolman_url;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_sn != sn || !m_snapshot.present)
             return;
+        spoolman_url = m_snapshot.spoolman_url;
         const auto now = std::chrono::steady_clock::now();
         for (const AFCProtocol::Lane &lane : m_snapshot.lanes) {
             if (lane.spool_id <= 0 || m_flow_k_reading.count(lane.spool_id))
@@ -379,19 +403,55 @@ void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::
             spools.push_back(lane.spool_id);
         }
     }
+    // A failed read counts as "no K" until it is due again.
+    auto store = [this, sn](int spool, double k) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_sn != sn)
+                return;
+            m_flow_k_reading.erase(spool);
+            m_flow_k[spool] = FlowK{k, std::chrono::steady_clock::now()};
+        }
+        m_flow_k_read.notify_all();
+    };
     for (const int spool : spools) {
         const json params = {{"request_method", "GET"}, {"path", "/v1/spool/" + std::to_string(spool)}, {"use_v2_response", true}};
-        host->async_jsonrpc_call("server.spoolman.proxy", params, [this, sn, spool](const json &res) {
-            // A failed read counts as "no K" until it is due again.
-            const double k = res.is_object() && res.count("data") ? AFCProtocol::spool_flow_k(res["data"]) : -1;
-            {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                if (m_sn != sn)
-                    return;
-                m_flow_k_reading.erase(spool);
-                m_flow_k[spool] = FlowK{k, std::chrono::steady_clock::now()};
+        host->async_jsonrpc_call("server.spoolman.proxy", params, [store, spool, spoolman_url](const json &res) {
+            const json *spool_json = nullptr;
+            if (res.is_object() && res.count("data") && res["data"].is_object()) {
+                const json &data = res["data"];
+                // use_v2_response: a failed Spoolman call still answers, with its error inside.
+                if (!(data.contains("error") && !data["error"].is_null()))
+                    spool_json = &data;
             }
-            m_flow_k_read.notify_all();
+            if (spool_json != nullptr) {
+                store(spool, AFCProtocol::spool_flow_k(*spool_json));
+                return;
+            }
+            BOOST_LOG_TRIVIAL(warning) << "AFC: Moonraker could not read Spoolman spool " << spool << ": "
+                                       << (res.is_object() && res.count("error") ? res["error"].dump() :
+                                           res.is_object() && res.count("data") ? res["data"].value("error", json()).dump() : res.dump());
+            // A printer whose Moonraker has no [spoolman] still has AFC's own Spoolman address: ask it directly.
+            if (spoolman_url.empty()) {
+                store(spool, -1);
+                return;
+            }
+            std::string base = spoolman_url;
+            while (!base.empty() && base.back() == '/')
+                base.pop_back();
+            Http::get(base + "/api/v1/spool/" + std::to_string(spool))
+                .timeout_connect(3)
+                .timeout_max(6)
+                .on_complete([store, spool](std::string body, unsigned) {
+                    const json spool_json = json::parse(body, nullptr, false);
+                    store(spool, spool_json.is_discarded() ? -1 : AFCProtocol::spool_flow_k(spool_json));
+                })
+                .on_error([store, spool, base](std::string, std::string error, unsigned status) {
+                    BOOST_LOG_TRIVIAL(warning) << "AFC: Spoolman at " << base << " could not be read for spool " << spool << ": "
+                                               << error << " (" << status << ")";
+                    store(spool, -1);
+                })
+                .perform();
         });
     }
 }
@@ -413,10 +473,13 @@ bool AFCManager::refresh_blocking(const std::shared_ptr<PrintHost> &host, int ti
         return m_snapshot.present && m_sn == sn;
     }
     future.get();
-    // The sync puts each spool's flow K into its slot, so let those reads land too.
+    // The sync puts each spool's flow K into its slot, so let those reads land too. They
+    // start only once AFC is read, and a printer far away over MQTT can take most of the
+    // time for that, so they get a budget of their own.
     std::unique_lock<std::mutex> lock(m_mutex);
-    if (!m_flow_k_read.wait_until(lock, deadline, [this] { return m_flow_k_reading.empty(); }))
-        BOOST_LOG_TRIVIAL(warning) << "AFC: flow K reads still running after " << timeout_ms << " ms";
+    const auto flow_k_deadline = std::max(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms));
+    if (!m_flow_k_read.wait_until(lock, flow_k_deadline, [this] { return m_flow_k_reading.empty(); }))
+        BOOST_LOG_TRIVIAL(warning) << "AFC: flow K reads still running after " << 2 * timeout_ms << " ms";
     // A read that failed keeps this printer's last good snapshot; the sync uses that too.
     return m_snapshot.present && m_sn == sn;
 }
@@ -441,8 +504,7 @@ void AFCManager::request_refresh(const std::shared_ptr<PrintHost> &host, std::ch
             PresetBundle *bundle = wxGetApp().preset_bundle;
             if (!bundle)
                 return;
-            std::shared_ptr<PrintHost> device;
-            wxGetApp().get_connect_host(device);
+            const std::shared_ptr<PrintHost> device = device_host();
             // The U1's device page pushes its toolheads first; until it has, leave its slots alone.
             if (device && self.m_toolheads.empty())
                 return;
@@ -492,13 +554,15 @@ void AFCManager::clear()
     m_refreshing.clear();
     m_applied_key.clear();
     m_toolheads.clear();
+    m_toolheads_key.clear();
     m_flow_k.clear();
     m_flow_k_reading.clear();
 }
 
 bool AFCManager::apply_machine_filaments(PresetBundle &bundle, const std::vector<ConnectMachineInfo> &toolheads)
 {
-    m_toolheads = toolheads;
+    m_toolheads     = toolheads;
+    m_toolheads_key = host_key(device_host());
     return reapply_machine_filaments(bundle);
 }
 
@@ -512,6 +576,11 @@ bool AFCManager::reapply_machine_filaments(PresetBundle &bundle)
     const std::vector<AFCProtocol::ToolSlot> slots = AFCProtocol::tool_slots(snap);
     if (slots.empty())
         return false;
+    // Toolheads belong to the printer they came from: another printer starts from its own.
+    if (m_toolheads_key != host_key(host)) {
+        m_toolheads.clear();
+        m_toolheads_key = host_key(host);
+    }
     // First AFC apply without a device-page push: the bundle still holds the toolhead slots.
     if (m_toolheads.empty() && m_applied_key.empty())
         m_toolheads = bundle.m_connect_machine_info_list;
@@ -552,6 +621,7 @@ bool AFCManager::drop_machine_filaments(PresetBundle &bundle)
     bundle.m_connect_machine_info_list.clear();
     m_applied_key.clear();
     m_toolheads.clear();
+    m_toolheads_key.clear();
     return true;
 }
 

@@ -1,8 +1,10 @@
 #include "MachineFilamentPicker.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include <wx/dcclient.h>
+#include <wx/display.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcmemory.h>
 #include <wx/dcgraph.h>
@@ -15,7 +17,8 @@ namespace
 
 // --- Popup layout ---
 constexpr int g_popupMinWidth = 67;  // DIP — minimum width (matches FilamentColorMapBox card width)
-constexpr int g_popupHeight   = 106; // DIP
+constexpr int g_popupBottomPad = 6;  // DIP — below the last row
+constexpr int g_maxVisibleRows = 10; // more rows than this scroll with the mouse wheel
 
 // --- Item row ---
 constexpr int g_itemRowH      = 16; // DIP — row height
@@ -38,6 +41,7 @@ constexpr int g_circleCx     = 30; // DIP from left edge
 // --- Text label ---
 constexpr int g_textX = 42;           // DIP from left edge
 constexpr int g_textRightPadding = 6; // DIP — right margin after text
+constexpr int g_scrollBarW       = 3; // DIP — scroll position mark at the right edge
 
 // --- Colours (from design spec) ---
 const wxColour g_selectionBg(0xBE, 0xE1, 0xDB);  // #BEE1DB
@@ -115,15 +119,20 @@ public:
         int contentWidthPx = FromDIP(g_textX + g_contentOffsetX) + maxTextWidthPx + FromDIP(g_textRightPadding);
         int actualWidthPx = std::max(minWidthPx, contentWidthPx);
 
-        wxSize sz(actualWidthPx, FromDIP(g_popupHeight));
+        // As tall as the list, up to g_maxVisibleRows; an AFC printer can have many more.
+        m_visibleRows = std::max(1, std::min(static_cast<int>(m_dataList.size()), g_maxVisibleRows));
+        wxSize sz(actualWidthPx, FromDIP(g_firstRowY + m_visibleRows * g_itemStepY + g_popupBottomPad));
         SetSize(sz);
         SetMinSize(sz);
         SetMaxSize(sz);
+        scrollTo(static_cast<int>(selectedIndex) - m_visibleRows / 2);
     }
 
     void setSelectedIndex(unsigned int idx)
     {
         m_selectedIndex = idx;
+        if (static_cast<int>(idx) < m_firstRow || static_cast<int>(idx) >= m_firstRow + m_visibleRows)
+            scrollTo(static_cast<int>(idx) - m_visibleRows / 2);
         Refresh();
     }
 
@@ -164,9 +173,21 @@ private:
 
         wxFont labelFont = Label::Body_10;
 
-        for (int i = 0; i < itemCount; ++i) {
-            int rowY = g_firstRowY + i * g_itemStepY;
+        const int lastRow = std::min(itemCount, m_firstRow + m_visibleRows);
+        for (int i = m_firstRow; i < lastRow; ++i) {
+            int rowY = g_firstRowY + (i - m_firstRow) * g_itemStepY;
             drawRow(dc, i, rowY, contentW, indexFont, labelFont);
+        }
+
+        // ---- Where the visible rows sit in a list that scrolls ----
+        if (itemCount > m_visibleRows) {
+            const int trackTop = FromDIP(g_firstRowY);
+            const int trackH   = FromDIP(m_visibleRows * g_itemStepY - g_itemGap);
+            const int thumbH   = std::max(FromDIP(8), trackH * m_visibleRows / itemCount);
+            const int thumbY   = trackTop + (trackH - thumbH) * m_firstRow / (itemCount - m_visibleRows);
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(g_circleStroke));
+            dc.DrawRoundedRectangle(contentW - FromDIP(g_scrollBarW + 2), thumbY, FromDIP(g_scrollBarW), thumbH, FromDIP(1));
         }
     }
 
@@ -258,10 +279,11 @@ private:
     void onLeftDown(wxMouseEvent& evt)
     {
         int row = hitTestRow(ToDIP(evt.GetY()),
-                             static_cast<int>(m_dataList.size()));
+                             std::min(m_visibleRows, static_cast<int>(m_dataList.size()) - m_firstRow));
         if (row < 0) {
             return;
         }
+        row += m_firstRow;
 
         // Ignore clicks on NONE (empty slot) entries
         if (isNoneEntry(m_dataList[row])) {
@@ -276,16 +298,37 @@ private:
         }
     }
 
-    void onMouseWheel(wxMouseEvent&)
+    void onMouseWheel(wxMouseEvent& evt)
     {
+        // A list taller than the popup scrolls; a short one closes, as before.
+        if (static_cast<int>(m_dataList.size()) > m_visibleRows) {
+            m_wheelRotation += evt.GetWheelRotation();
+            const int delta = evt.GetWheelDelta() > 0 ? evt.GetWheelDelta() : 120;
+            const int steps = m_wheelRotation / delta;
+            if (steps != 0) {
+                m_wheelRotation -= steps * delta;
+                scrollTo(m_firstRow - steps);
+                Refresh();
+            }
+            return;
+        }
         auto* popup = static_cast<wxPopupTransientWindow*>(GetParent());
         if (popup) {
             popup->Dismiss();
         }
     }
 
+    void scrollTo(int firstRow)
+    {
+        const int maxFirst = std::max(0, static_cast<int>(m_dataList.size()) - m_visibleRows);
+        m_firstRow         = std::max(0, std::min(firstRow, maxFirst));
+    }
+
     std::vector<FilamentData> m_dataList;
     unsigned int              m_selectedIndex = 0;
+    int                       m_visibleRows   = 1;
+    int                       m_firstRow      = 0;
+    int                       m_wheelRotation = 0;
     std::function<void(unsigned int)> m_selectionCallback = nullptr;
 };
 
@@ -346,7 +389,14 @@ void MachineFilamentPicker::popupAt(const wxPoint& pos)
     int minWidthPx = FromDIP(g_popupMinWidth);
     int actualWidthPx = m_contentPanel ? m_contentPanel->GetSize().x : minWidthPx;
     int offsetX = (actualWidthPx - minWidthPx) / 2;
-    SetPosition(wxPoint(pos.x - offsetX, pos.y));
+    wxPoint at(pos.x - offsetX, pos.y);
+    // A long list must not run off the bottom of the screen.
+    const int display = wxDisplay::GetFromPoint(pos);
+    if (display != wxNOT_FOUND) {
+        const wxRect area = wxDisplay(static_cast<unsigned>(display)).GetClientArea();
+        at.y              = std::max(area.GetTop(), std::min(at.y, area.GetBottom() - GetSize().y));
+    }
+    SetPosition(at);
     Popup();
 }
 
