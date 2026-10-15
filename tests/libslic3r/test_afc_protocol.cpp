@@ -161,6 +161,15 @@ TEST_CASE("a U1 reports its own print switches beside AFC", "[AFCProtocol]")
     AFCProtocol::merge_afc_object(json{{"status", {{"AFC", {{"multiple_tool_mapping", true}}}}}}, s);
     CHECK_FALSE(s.u1_print.present);
 
+    // Klipper answers the query on such a printer with null fields: still not a U1.
+    AFCProtocol::merge_afc_object(json{{"status",
+                                        {{"AFC", json::object()},
+                                         {"print_task_config",
+                                          {{"auto_bed_leveling", nullptr}, {"flow_calibrate", nullptr}, {"time_lapse_camera", nullptr}}}}}},
+                                  s);
+    CHECK_FALSE(s.u1_print.present);
+    CHECK(AFCProtocol::to_json(s)["u1_print"].is_null());
+
     AFCProtocol::merge_afc_object(json{{"status",
                                         {{"AFC", json::object()},
                                          {"print_task_config",

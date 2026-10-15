@@ -161,11 +161,15 @@ void read_afc_object(const json &afc, Snapshot &out)
     }
 }
 
-// The U1's print_task_config object, when the status map has one.
+// The U1's print_task_config object, when the status map has one. Klipper answers a
+// query for an object it lacks with null fields, so only real values mark a U1.
 void read_u1_print_options(const json &status, Snapshot &out)
 {
     auto it = status.find("print_task_config");
     if (it == status.end() || !it->is_object())
+        return;
+    const bool has_value = std::any_of(it->begin(), it->end(), [](const json &v) { return !v.is_null(); });
+    if (!has_value)
         return;
     out.u1_print.present        = true;
     out.u1_print.bed_level      = bool_field(*it, "auto_bed_leveling");
@@ -415,7 +419,7 @@ bool parse_status_endpoint(const json &result, Snapshot &out)
 json afc_object_query()
 {
     // AFC's webhook "system" block has no multiple_tool_mapping; only the object reports it.
-    // Klipper skips objects a printer lacks, so print_task_config only answers on a U1.
+    // A printer without print_task_config answers it with null fields (see read_u1_print_options).
     return json{{"AFC", {"multiple_tool_mapping"}},
                 {"print_task_config", {"auto_bed_leveling", "flow_calibrate", "time_lapse_camera"}}};
 }
