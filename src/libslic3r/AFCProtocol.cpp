@@ -1026,6 +1026,18 @@ std::vector<std::string> spool_preset_aliases(const Lane &lane)
     return out;
 }
 
+std::string afc_lane_preset_name(const Lane &lane)
+{
+    if (is_unknown(lane.material) || (lane.nozzle_temp <= 0 && lane.bed_temp <= 0))
+        return {};
+    std::string name = "AFC " + lane.material + (is_unknown(lane.sub_type) ? std::string() : " " + lane.sub_type);
+    if (lane.nozzle_temp > 0)
+        name += " " + std::to_string(lane.nozzle_temp) + "C";
+    if (lane.bed_temp > 0)
+        name += " bed " + std::to_string(lane.bed_temp) + "C";
+    return clean_preset_part(name);
+}
+
 bool is_safe_lane_name(const std::string &name)
 {
     if (name.empty() || name.size() > 64)

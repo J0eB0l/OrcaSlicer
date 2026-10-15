@@ -223,6 +223,12 @@ std::string spool_preset_name(const Lane &lane);
 /// Empty when spool_preset_name is.
 std::vector<std::string> spool_preset_aliases(const Lane &lane);
 
+/// Base name of the filament preset for a lane AFC knows without a vendor (no
+/// Spoolman spool), built from what AFC holds for it: "AFC <material>[ <sub_type>]
+/// <nozzle>C[ bed <bed>C]", e.g. "AFC PLA 210C bed 60C". Empty when AFC has no
+/// material or no temperature for it, since the generic preset then says as much.
+std::string afc_lane_preset_name(const Lane &lane);
+
 /// Put each filament slot's spool pressure advance (`spool`, one value per
 /// slot, -1 = keep the filament preset's) into a composed config's
 /// pressure_advance and enable_pressure_advance vectors. Every flow variant of

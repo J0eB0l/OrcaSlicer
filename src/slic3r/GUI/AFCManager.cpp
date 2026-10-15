@@ -651,7 +651,11 @@ AFCManager::SpoolPreset AFCManager::spool_filament_preset(PresetBundle &bundle, 
     const AFCProtocol::Lane    *lane = snap.lane_for_tool(tool);
     if (lane == nullptr || !lane->has_filament())
         return out;
-    const std::vector<std::string> aliases = AFCProtocol::spool_preset_aliases(*lane);
+    std::vector<std::string> aliases = AFCProtocol::spool_preset_aliases(*lane);
+    // No vendor (no Spoolman spool): a preset with what AFC holds for the lane, not the generic one.
+    if (aliases.empty())
+        if (const std::string afc_name = AFCProtocol::afc_lane_preset_name(*lane); !afc_name.empty())
+            aliases.push_back(afc_name);
     if (aliases.empty())
         return out;
     PresetCollection &filaments = bundle.filaments;
@@ -720,7 +724,8 @@ AFCManager::SpoolPreset AFCManager::spool_filament_preset(PresetBundle &bundle, 
             for (std::string &v : option->values)
                 v = value;
         };
-        set_strings("filament_vendor", vendor);
+        if (!vendor.empty())
+            set_strings("filament_vendor", vendor);
         set_strings("filament_notes", SPOOL_PRESET_NOTE);
         apply_spool_values(spool, preset.config);
     });

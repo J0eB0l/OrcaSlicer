@@ -647,6 +647,31 @@ TEST_CASE("a spool's preset name comes from its vendor and filament name", "[AFC
     CHECK(AFCProtocol::spool_preset_name(spool(" eSUN ", "PLA+  Silk/Gold @2kg", "PLA")) == "eSUN PLA+ Silk-Gold -2kg");
 }
 
+TEST_CASE("a lane without a vendor gets a preset named for what AFC holds", "[AFCProtocol]")
+{
+    AFCProtocol::Lane l;
+    l.material    = "PLA";
+    l.nozzle_temp = 210;
+    l.bed_temp    = 60;
+    CHECK(AFCProtocol::afc_lane_preset_name(l) == "AFC PLA 210C bed 60C");
+    l.bed_temp = 0;
+    CHECK(AFCProtocol::afc_lane_preset_name(l) == "AFC PLA 210C");
+    l.sub_type = "Silk";
+    CHECK(AFCProtocol::afc_lane_preset_name(l) == "AFC PLA Silk 210C");
+    l.sub_type    = "NONE";
+    l.nozzle_temp = 0;
+    l.bed_temp    = 65;
+    CHECK(AFCProtocol::afc_lane_preset_name(l) == "AFC PLA bed 65C");
+    // Nothing beyond the material: the generic preset says as much.
+    l.bed_temp = 0;
+    CHECK(AFCProtocol::afc_lane_preset_name(l).empty());
+    l.nozzle_temp = 210;
+    l.material    = "";
+    CHECK(AFCProtocol::afc_lane_preset_name(l).empty());
+    l.material = "PLA/PHA";
+    CHECK(AFCProtocol::afc_lane_preset_name(l) == "AFC PLA-PHA 210C");
+}
+
 TEST_CASE("a spool's preset may carry its filament name without the vendor", "[AFCProtocol]")
 {
     AFCProtocol::Lane l;
