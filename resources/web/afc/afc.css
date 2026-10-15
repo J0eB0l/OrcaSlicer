@@ -256,6 +256,23 @@ button, input, select { font: inherit; color: inherit; }
   border-top: 1px solid var(--border); background: var(--surface); flex: none;
 }
 .footer .grow { flex: 1; }
+.print-opts {
+  display: flex; gap: 8px 18px; align-items: center; flex-wrap: wrap; padding: 9px 12px;
+  border-top: 1px solid var(--border); background: var(--surface); flex: none; font-size: 12px;
+}
+.print-opts .lbl { color: var(--text-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; color: var(--text); }
+.switch input {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none; cursor: pointer;
+  width: 30px; height: 17px; border-radius: 9px; background: var(--border); position: relative; transition: background 0.15s;
+}
+.switch input::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: left 0.15s;
+}
+.switch input:checked { background: var(--accent); }
+.switch input:checked::after { left: 15px; }
+.switch input:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
 
 .empty-state { text-align: center; color: var(--text-2); padding: 40px 18px; }
 .empty-state .big { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }

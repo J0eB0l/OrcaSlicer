@@ -13,8 +13,11 @@ namespace Slic3r {
 //  - main.<hash>.js reads that flag instead of the hard-coded "light",
 //  - the bootstrap and main script URLs get a query tag, so a copy the web view
 //    cached before the rewrite (served "immutable") is not reused.
+// The print popup (path=4) also starts its flow calibration, time-lapse and
+// auto leveling switches from afc_<switch>=1 in its query (window.__afcPO),
+// the picks from the AFC lane screen before it.
 // A file whose pattern is not found (a Snapmaker update changed it) is left
-// alone and the page stays light.
+// alone: the page stays light, the switches start off.
 //
 // basename is the served file's lowercased name. Returns true if content changed.
 bool patch_flutter_web_file(const std::string &basename, std::string &content);

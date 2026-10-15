@@ -20,6 +20,19 @@ namespace {
 
 std::shared_ptr<PrintHost> connected_host() { return AFCManager::afc_host(); }
 
+// {bed_level, flow_calibrate, time_lapse_camera} from the page.
+AFCProtocol::U1PrintOptions u1_print_options(const json &j)
+{
+    AFCProtocol::U1PrintOptions options;
+    if (!j.is_object())
+        return options;
+    options.present        = true;
+    options.bed_level      = j.value("bed_level", false);
+    options.flow_calibrate = j.value("flow_calibrate", false);
+    options.time_lapse     = j.value("time_lapse_camera", false);
+    return options;
+}
+
 } // namespace
 
 const std::unordered_set<std::string> &SSWCP_AFC_Instance::commands()
@@ -27,7 +40,7 @@ const std::unordered_set<std::string> &SSWCP_AFC_Instance::commands()
     static const std::unordered_set<std::string> list = {
         "sw_AFC_GetState",     "sw_AFC_EditLane",           "sw_AFC_LaneAction",     "sw_AFC_ApplyMapping",
         "sw_AFC_SyncToSlicer", "sw_AFC_OpenSpoolman",       "sw_AFC_FinishPrintMapping", "sw_AFC_SetPanelVisible",
-        "sw_AFC_Dry",
+        "sw_AFC_Dry",          "sw_AFC_SetPrintOptions",
     };
     return list;
 }
@@ -53,6 +66,8 @@ void SSWCP_AFC_Instance::process()
             sw_AFC_SetPanelVisible();
         else if (m_cmd == "sw_AFC_Dry")
             sw_AFC_Dry();
+        else if (m_cmd == "sw_AFC_SetPrintOptions")
+            sw_AFC_SetPrintOptions();
         else
             fail("unknown command");
     } catch (const std::exception &e) {
@@ -207,10 +222,27 @@ void SSWCP_AFC_Instance::sw_AFC_OpenSpoolman()
 
 void SSWCP_AFC_Instance::sw_AFC_FinishPrintMapping()
 {
-    const std::string action = m_param_data.value("action", "cancel");
+    const std::string                 action = m_param_data.value("action", "cancel");
+    const AFCProtocol::U1PrintOptions u1     = u1_print_options(m_param_data.value("u1_print", json()));
     send_to_js();
     finish_job();
-    wxGetApp().CallAfter([action]() { AFCPrintDialog::finish_active(action == "continue"); });
+    wxGetApp().CallAfter([action, u1]() { AFCPrintDialog::finish_active(action == "continue", u1); });
+}
+
+void SSWCP_AFC_Instance::sw_AFC_SetPrintOptions()
+{
+    auto host = connected_host();
+    if (!host)
+        return fail("The printer is not connected");
+    if (!AFCManager::instance().snapshot().u1_print.present)
+        return fail("This printer has no U1 print options");
+    const std::string gcode = AFCProtocol::u1_print_options_gcode(u1_print_options(m_param_data));
+    auto self = std::static_pointer_cast<SSWCP_AFC_Instance>(shared_from_this());
+    AFCManager::send_gcode(host, {gcode}, [self, gcode](const std::string &err) {
+        if (!err.empty())
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: " << gcode << " failed: " << err;
+        self->reply_state(true, true, err);
+    });
 }
 
 void SSWCP_AFC_Instance::sw_AFC_SetPanelVisible()

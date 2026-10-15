@@ -89,6 +89,7 @@ struct RefreshJob : std::enable_shared_from_this<RefreshJob>
             const json list = res.is_object() && res.count("data") ? res["data"] : json::object();
             json       params;
             params["objects"]["AFC"] = nullptr;
+            params["objects"]["print_task_config"] = AFCProtocol::afc_object_query()["print_task_config"];
             for (const std::string &name : AFCProtocol::lane_object_names(list, lanes))
                 params["objects"][name] = nullptr;
             self->host->async_jsonrpc_call("printer.objects.query", params, [self](const json &res) {

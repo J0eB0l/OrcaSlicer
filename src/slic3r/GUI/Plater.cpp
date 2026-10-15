@@ -21826,11 +21826,14 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
 
 
         // AFC: map every project filament to an AFC lane before the Snapmaker
-        // print dialog, which only knows the four toolheads.
-        if (dlg.post_action() != PrintHostPostUploadAction::None && !AFCPrintDialog::map_lanes_before_print(this))
+        // print dialog, which only knows the four toolheads. The U1 print
+        // switches picked there open Snapmaker's dialog already set.
+        AFCProtocol::U1PrintOptions afc_u1_print;
+        if (dlg.post_action() != PrintHostPostUploadAction::None && !AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print))
             return;
 
         WebPreprintDialog* dialog = new WebPreprintDialog();
+        dialog->set_url_query(AFCPrintDialog::preprint_query(afc_u1_print));
         dialog->set_swtich_to_device(dlg.switch_to_device_tab());
         dialog->set_send_page(dlg.post_action() == PrintHostPostUploadAction::None);
         dialog->set_gcode_file_name(upload_job.upload_data.source_path.string());

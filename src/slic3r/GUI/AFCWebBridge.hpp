@@ -20,7 +20,9 @@ namespace GUI {
 //   sw_AFC_ApplyMapping      {mapping:[{tool, lane}]}    SET_MAP each T(n), -> new state
 //   sw_AFC_SyncToSlicer      {}                          opens the filament sync with AFC slots
 //   sw_AFC_OpenSpoolman      {spool_id}                  opens the spool in Spoolman
-//   sw_AFC_FinishPrintMapping {action}                   "continue" | "cancel" (print step)
+//   sw_AFC_FinishPrintMapping {action, u1_print?}        "continue" | "cancel" (print step);
+//                                                        u1_print {bed_level, flow_calibrate, time_lapse_camera}
+//   sw_AFC_SetPrintOptions   {bed_level, flow_calibrate, time_lapse_camera}  U1 print switches, -> new state
 //   sw_AFC_SetPanelVisible   {visible}                   shows/hides the Device-tab panel
 //   sw_AFC_Dry               {unit, action, temp?, minutes?, rotate?}  start / stop a unit dryer
 class SSWCP_AFC_Instance : public SSWCP_Instance
@@ -42,6 +44,7 @@ private:
     void sw_AFC_SyncToSlicer();
     void sw_AFC_OpenSpoolman();
     void sw_AFC_FinishPrintMapping();
+    void sw_AFC_SetPrintOptions();
     void sw_AFC_SetPanelVisible();
     void sw_AFC_Dry();
 

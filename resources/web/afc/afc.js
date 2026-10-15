@@ -13,6 +13,8 @@
 
   const params = new URLSearchParams(location.search);
   const VIEW = params.get('view') === 'print' ? 'print' : 'panel';
+  // Print view on a U1 preset: Snapmaker's own print popup opens next and sends the file.
+  const SNAPMAKER_SENDS = params.get('sender') === 'snapmaker';
   const darkParam = params.get('dark_mode');
   if (darkParam === '1' || darkParam === 'true' ||
       (darkParam === null && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -155,6 +157,8 @@
   let busy = false;
   let mapping = null;        // print view: filament id -> lane name
   let openMenu = null;       // print view: filament id with its picker open
+  let u1Print = null;        // print view: the U1's print switches as picked here
+  let u1SetFailed = false;   // print view: the printer refused them once; the next try prints without
   let dryUnit = null;        // panel: unit name with the dry popup open
   let dryForm = null;        // panel: what the dry popup holds {material, temp, hours, rotate}
 
@@ -175,6 +179,7 @@
       stateJson = json;
       if (data && data.error) toast(data.error, true);
       if (VIEW === 'print' && mapping === null) resetMapping();
+      if (VIEW === 'print' && u1Print === null && data && data.afc && data.afc.u1_print) u1Print = Object.assign({}, data.afc.u1_print);
       if (!unchanged) render();
     } catch (e) {
       if (!state) renderError(e.message);
@@ -588,6 +593,7 @@
       '<div class="scroll" id="scroll">' + summary(used) +
       (state.project.sliced ? '' : '<div class="summary"><span class="pill warn">Slice the plate to see grams and which filaments it uses</span></div>') +
       '<div class="map-head"><div>Plate filament</div><div></div><div>AFC lane</div></div>' + rows + '</div>' +
+      printOptions() +
       '<div class="footer"><span class="hint">Applying sets each T number to its lane with SET_MAP.</span><div class="grow"></div>' +
       '<button class="btn" id="cancel">Cancel</button>' +
       '<button class="btn" id="skip" title="Print with the T map AFC has now">Keep current map</button>' +
@@ -596,8 +602,11 @@
     document.getElementById('auto').onclick = () => { resetMapping(); render(); };
     document.getElementById('refresh').onclick = () => load(true);
     document.getElementById('cancel').onclick = () => finish('cancel');
-    document.getElementById('skip').onclick = () => finish('continue');
-    document.getElementById('apply').onclick = apply;
+    document.getElementById('skip').onclick = () => proceed(false);
+    document.getElementById('apply').onclick = () => proceed(true);
+    for (const el of document.querySelectorAll('.print-opts input[data-opt]')) {
+      el.onchange = () => { u1Print[el.dataset.opt] = el.checked; };
+    }
     for (const el of document.querySelectorAll('.pick-btn')) {
       el.onclick = (e) => { e.stopPropagation(); const id = +el.dataset.fil; openMenu = openMenu === id ? null : id; render(); };
     }
@@ -657,17 +666,53 @@
     return '<div class="summary">' + chips + '</div>';
   }
 
-  async function apply() {
-    const pairs = filaments().filter((f) => f.used).map((f) => ({ tool: f.id, lane: mapping[f.id] }));
+  // The U1's own print popup offers these three; they ride along with the lane map.
+  const U1_OPTIONS = [
+    ['flow_calibrate', 'Extrusion flow calibration', 'Calibrates flow compensation before the print'],
+    ['time_lapse_camera', 'Time-lapse camera', 'Records a time-lapse of the print'],
+    ['bed_level', 'Auto leveling', 'Levels the bed before the print'],
+  ];
+
+  function printOptions() {
+    if (!u1Print) return '';
+    return '<div class="print-opts"><span class="lbl">U1 print options</span>' +
+      U1_OPTIONS.map(([key, label, tip]) => '<label class="switch" title="' + esc(tip) + '"><input type="checkbox" data-opt="' + key + '"' +
+        (u1Print[key] ? ' checked' : '') + '><span>' + esc(label) + '</span></label>').join('') + '</div>';
+  }
+
+  // With Snapmaker's popup next, it sends the switches itself (opening with these picked).
+  // Otherwise the printer gets them now, as its popup would set them.
+  async function setPrintOptions() {
+    if (!u1Print || SNAPMAKER_SENDS || u1SetFailed) return true;
+    const now = (state && state.afc && state.afc.u1_print) || {};
+    if (U1_OPTIONS.every(([key]) => !!now[key] === !!u1Print[key])) return true;
+    let error = '';
+    try {
+      const data = await call('sw_AFC_SetPrintOptions', u1Print);
+      error = (data && data.error) || '';
+    } catch (e) {
+      error = e.message;
+    }
+    if (!error) return true;
+    u1SetFailed = true;
+    toast('The printer did not take the U1 print options: ' + error + '. Continue again to print without them.', true);
+    return false;
+  }
+
+  async function proceed(applyMap) {
     if (busy) return;
     busy = true;
     $app.classList.add('busy');
     try {
-      const data = await call('sw_AFC_ApplyMapping', { mapping: pairs });
-      if (data && data.error) {
-        toast(data.error, true);
-        return;
+      if (applyMap) {
+        const pairs = filaments().filter((f) => f.used).map((f) => ({ tool: f.id, lane: mapping[f.id] }));
+        const data = await call('sw_AFC_ApplyMapping', { mapping: pairs });
+        if (data && data.error) {
+          toast(data.error, true);
+          return;
+        }
       }
+      if (!(await setPrintOptions())) return;
       await finish('continue');
     } catch (e) {
       toast(e.message, true);
@@ -678,7 +723,8 @@
   }
 
   function finish(action) {
-    return call('sw_AFC_FinishPrintMapping', { action: action }).catch((e) => toast(e.message, true));
+    return call('sw_AFC_FinishPrintMapping', { action: action, u1_print: action === 'continue' ? u1Print : null })
+      .catch((e) => toast(e.message, true));
   }
 
   document.addEventListener('click', () => {

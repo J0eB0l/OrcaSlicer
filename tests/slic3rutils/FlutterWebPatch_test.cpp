@@ -27,9 +27,10 @@ TEST_CASE("index.html sets the dark flag and tags the scripts", "[FlutterWebPatc
     REQUIRE(patch_flutter_web_file("index.html", html));
     CHECK(html.find("<body><script>window.__afcDark=") != std::string::npos);
     CHECK(html.find("path=2") != std::string::npos);
-    CHECK(html.find(R"(href="main.0123456789abcdef.js?afc=1")") != std::string::npos);
-    CHECK(html.find(R"(src="flutter_bootstrap.fedcba9876543210.js?afc=1")") != std::string::npos);
+    CHECK(html.find(R"(href="main.0123456789abcdef.js?afc=2")") != std::string::npos);
+    CHECK(html.find(R"(src="flutter_bootstrap.fedcba9876543210.js?afc=2")") != std::string::npos);
     CHECK(html.find(R"(src="flutter_overlay.0123456789abcdef.js")") != std::string::npos);
+    CHECK(html.find("window.__afcPO={};") != std::string::npos);
 
     const std::string once = html;
     CHECK_FALSE(patch_flutter_web_file("index.html", html));
@@ -40,7 +41,7 @@ TEST_CASE("bootstrap loads the tagged main script", "[FlutterWebPatch]")
 {
     std::string js = R"(_flutter.buildConfig={"builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.0123456789abcdef.js"},{}]};)";
     REQUIRE(patch_flutter_web_file("flutter_bootstrap.fedcba9876543210.js", js));
-    CHECK(js.find(R"("mainJsPath":"main.0123456789abcdef.js?afc=1")") != std::string::npos);
+    CHECK(js.find(R"("mainJsPath":"main.0123456789abcdef.js?afc=2")") != std::string::npos);
     CHECK_FALSE(patch_flutter_web_file("flutter_bootstrap.fedcba9876543210.js", js));
 }
 
@@ -64,6 +65,33 @@ TEST_CASE("main script reads the dark flag at start-up", "[FlutterWebPatch]")
     }
 }
 
+TEST_CASE("print popup starts its switches from the AFC lane screen", "[FlutterWebPatch]")
+{
+    const std::string shown = R"(m=A.x(["bed_level",!1,"flow_calibrate",!1,s,!1],n,t.y))";
+    const std::string sent  = R"(k=A.x(["bed_level",0,"flow_calibrate",0,s,0],n,l))";
+    std::string js = R"(bIX(a){var s="time_lapse_camera",)" + shown + "," + sent + ",j=$.aP()}";
+    REQUIRE(patch_flutter_web_file("main.0123456789abcdef.js", js));
+    CHECK(js.find(R"(m=A.x(["bed_level",!!(window.__afcPO||{}).bed_level,"flow_calibrate",!!(window.__afcPO||{}).flow_calibrate,s,)"
+                  R"(!!(window.__afcPO||{}).time_lapse_camera],n,t.y))") != std::string::npos);
+    CHECK(js.find(R"(k=A.x(["bed_level",(window.__afcPO||{}).bed_level?1:0,"flow_calibrate",(window.__afcPO||{}).flow_calibrate?1:0,s,)"
+                  R"((window.__afcPO||{}).time_lapse_camera?1:0],n,l))") != std::string::npos);
+    CHECK_FALSE(patch_flutter_web_file("main.0123456789abcdef.js", js));
+
+    SECTION("the key written out instead of a variable") {
+        std::string literal = R"(A.x(["bed_level",0,"flow_calibrate",0,"time_lapse_camera",0],n,l);)"
+                              R"(A.x(["bed_level",!1,"flow_calibrate",!1,"time_lapse_camera",!1],n,t.y))";
+        REQUIRE(patch_flutter_web_file("main.0123456789abcdef.js", literal));
+        CHECK(literal.find(R"("time_lapse_camera",(window.__afcPO||{}).time_lapse_camera?1:0])") != std::string::npos);
+        CHECK(literal.find(R"("time_lapse_camera",!!(window.__afcPO||{}).time_lapse_camera])") != std::string::npos);
+    }
+    SECTION("only one of the two maps is left alone") {
+        std::string half = R"(var s="time_lapse_camera",)" + shown + ";";
+        const std::string before = half;
+        CHECK_FALSE(patch_flutter_web_file("main.0123456789abcdef.js", half));
+        CHECK(half == before);
+    }
+}
+
 TEST_CASE("other files are served as they are", "[FlutterWebPatch]")
 {
     std::string js = "q.a=q.b=!1\nA.HL(\"[ThemeVM] toggleTheme\")";
@@ -81,7 +109,7 @@ TEST_CASE("the bundled Snapmaker page can be patched", "[FlutterWebPatch]")
     // The bundled page names its scripts by content hash; follow index.html to them.
     const auto hashed = [&html](const std::string &prefix) {
         const size_t at  = html.find(prefix);
-        const size_t end = html.find("?afc=1", at);
+        const size_t end = html.find("?afc=2", at);
         REQUIRE(at != std::string::npos);
         REQUIRE(end != std::string::npos);
         return html.substr(at, end - at);
@@ -94,4 +122,5 @@ TEST_CASE("the bundled Snapmaker page can be patched", "[FlutterWebPatch]")
     std::string main = read_bundled(main_name);
     CHECK(patch_flutter_web_file(main_name, main));
     CHECK(main.find("!!window.__afcDark") != std::string::npos);
+    CHECK(main.find("(window.__afcPO||{}).bed_level?1:0") != std::string::npos);
 }

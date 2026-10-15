@@ -157,6 +157,18 @@ void read_afc_object(const json &afc, Snapshot &out)
     }
 }
 
+// The U1's print_task_config object, when the status map has one.
+void read_u1_print_options(const json &status, Snapshot &out)
+{
+    auto it = status.find("print_task_config");
+    if (it == status.end() || !it->is_object())
+        return;
+    out.u1_print.present        = true;
+    out.u1_print.bed_level      = bool_field(*it, "auto_bed_leveling");
+    out.u1_print.flow_calibrate = bool_field(*it, "flow_calibrate");
+    out.u1_print.time_lapse     = bool_field(*it, "time_lapse_camera");
+}
+
 const json *unwrap_status(const json &result)
 {
     const json *cur = &result;
@@ -399,7 +411,9 @@ bool parse_status_endpoint(const json &result, Snapshot &out)
 json afc_object_query()
 {
     // AFC's webhook "system" block has no multiple_tool_mapping; only the object reports it.
-    return json{{"AFC", {"multiple_tool_mapping"}}};
+    // Klipper skips objects a printer lacks, so print_task_config only answers on a U1.
+    return json{{"AFC", {"multiple_tool_mapping"}},
+                {"print_task_config", {"auto_bed_leveling", "flow_calibrate", "time_lapse_camera"}}};
 }
 
 void merge_afc_object(const json &status, Snapshot &out)
@@ -407,11 +421,20 @@ void merge_afc_object(const json &status, Snapshot &out)
     const json *st = &status;
     if (auto it = status.find("status"); it != status.end() && it->is_object())
         st = &*it;
-    auto afc = st->is_object() ? st->find("AFC") : st->end();
+    if (!st->is_object())
+        return;
+    read_u1_print_options(*st, out);
+    auto afc = st->find("AFC");
     if (afc == st->end() || !afc->is_object())
         return;
     if (auto it = afc->find("multiple_tool_mapping"); it != afc->end() && !it->is_null())
         out.multiple_mapping = bool_field(*afc, "multiple_tool_mapping");
+}
+
+std::string u1_print_options_gcode(const U1PrintOptions &options)
+{
+    return std::string("SET_PRINT_PREFERENCES BED_LEVEL=") + (options.bed_level ? "1" : "0") +
+           " FLOW_CALIBRATE=" + (options.flow_calibrate ? "1" : "0") + " TIME_LAPSE_CAMERA=" + (options.time_lapse ? "1" : "0");
 }
 
 std::vector<std::string> lane_object_names(const json &objects_list, const std::vector<std::string> &lane_names)
@@ -459,6 +482,7 @@ bool parse_objects_status(const json &status, Snapshot &out)
         return false;
     const json &afc = *afc_it;
     read_afc_object(afc, out);
+    read_u1_print_options(*st, out);
 
     std::map<std::string, std::string> unit_types;
     if (auto it = afc.find("units"); it != afc.end() && it->is_array())
@@ -768,6 +792,10 @@ json to_json(const Snapshot &s)
     j["multiple_mapping"] = s.multiple_mapping;
     j["current_lane"]     = s.current_lane;
     j["extruders"]        = s.extruders;
+    j["u1_print"]         = s.u1_print.present ? json{{"bed_level", s.u1_print.bed_level},
+                                                      {"flow_calibrate", s.u1_print.flow_calibrate},
+                                                      {"time_lapse_camera", s.u1_print.time_lapse}}
+                                               : json(nullptr);
     j["units"]            = json::array();
     for (const Unit &u : s.units) {
         json unit = {{"name", u.name}, {"type", u.type}, {"lanes", u.lanes}, {"dryer", nullptr}};

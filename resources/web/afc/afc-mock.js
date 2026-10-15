@@ -21,6 +21,8 @@
 
   const afc = {
     present: true, version: '1.2.7', spoolman: true, spoolman_url: 'http://spoolman.local:7912', multiple_mapping: false,
+    // A U1 (print_task_config) reports its own print switches; add &u1=1 to see them.
+    u1_print: /[?&]u1=1/.test(location.search) ? { bed_level: false, flow_calibrate: true, time_lapse_camera: false } : null,
     current_lane: 'lane1', extruders: ['extruder', 'extruder1', 'extruder2', 'extruder3', 'extruder4', 'extruder5'],
     units: [
       { name: 'Ace2_1', type: 'ACE2', lanes: ['lane0', 'lane1', 'lane2', 'lane3'],
@@ -113,6 +115,10 @@
             const holder = afc.lanes.find((x) => x.maps.includes(key));
             if (holder && target && holder !== target) { holder.maps = target.maps; target.maps = [key]; }
           });
+          return reply(msg.header, 200, 'OK', state(true));
+        case 'sw_AFC_SetPrintOptions':
+          if (!afc.u1_print) return reply(msg.header, -1, 'This printer has no U1 print options');
+          afc.u1_print = { bed_level: !!p.bed_level, flow_calibrate: !!p.flow_calibrate, time_lapse_camera: !!p.time_lapse_camera };
           return reply(msg.header, 200, 'OK', state(true));
         case 'sw_AFC_LaneAction':
           return reply(msg.header, 200, 'OK', Object.assign(state(false), { error: 'Demo page: nothing moved' }));

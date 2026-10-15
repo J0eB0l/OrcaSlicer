@@ -85,6 +85,17 @@ struct Unit
     Dryer                    dryer;
 };
 
+/// The Snapmaker U1's own print-start switches, read from its
+/// print_task_config object. Other printers have no such object, so
+/// `present` stays false there.
+struct U1PrintOptions
+{
+    bool present{false};
+    bool bed_level{false};      ///< auto bed leveling before the print
+    bool flow_calibrate{false}; ///< extrusion flow calibration
+    bool time_lapse{false};     ///< time-lapse camera
+};
+
 struct Snapshot
 {
     bool                     present{false};   ///< AFC answered
@@ -96,6 +107,7 @@ struct Snapshot
     std::vector<std::string> extruders;
     std::vector<Unit>        units;
     std::vector<Lane>        lanes;            ///< every lane, unit order
+    U1PrintOptions           u1_print;         ///< the U1's print switches as the printer has them now
 
     const Lane *find_lane(const std::string &name) const;
     /// Lane currently mapped to T(tool), or nullptr.
@@ -118,12 +130,18 @@ std::string normalize_color(const std::string &color);
 /// (AFC sends the latter). Returns false when no AFC data is present.
 bool parse_status_endpoint(const nlohmann::json &result, Snapshot &out);
 
-/// Klipper AFC object fields the webhook leaves out, for afc_object_query().
+/// Klipper AFC object fields the webhook leaves out, plus the U1's
+/// print_task_config switches, for afc_object_query().
 nlohmann::json afc_object_query();
 
 /// Read a `printer.objects.query` status map for afc_object_query() into a
 /// snapshot parsed from the webhook. A field the answer lacks keeps its value.
 void merge_afc_object(const nlohmann::json &status, Snapshot &out);
+
+/// G-code that sets the U1's print-start switches the way its own print
+/// popup does when the print is started without it:
+/// "SET_PRINT_PREFERENCES BED_LEVEL=1 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=1".
+std::string u1_print_options_gcode(const U1PrintOptions &options);
 
 /// Names of the per-lane Klipper objects in a `printer.objects.list` result
 /// ({"objects": [...]}) for the given lane names, e.g. "AFC_stepper lane1".

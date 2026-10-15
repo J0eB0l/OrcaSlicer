@@ -23,6 +23,9 @@ public:
 
     void set_display_file_name(const std::string& filename);
 
+    // AFC: extra "&key=value" parameters for the print page URL.
+    void set_url_query(const std::string& query) { m_url_query = query; }
+
     bool is_send_page();
 
     void set_send_page(bool flag);
@@ -52,6 +55,7 @@ private:
     wxString    m_preSend_url;
     std::string m_gcode_file_name = "";
     std::string m_display_file_name = "";
+    std::string m_url_query;
     bool        m_send_page         = false;
     bool        m_switch_to_device  = false;
 

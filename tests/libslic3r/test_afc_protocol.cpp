@@ -106,7 +106,7 @@ TEST_CASE("multiple tool mapping comes from the AFC object, which the webhook le
     AFCProtocol::Snapshot s;
     REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));
     CHECK_FALSE(s.multiple_mapping);
-    CHECK(AFCProtocol::afc_object_query() == json{{"AFC", {"multiple_tool_mapping"}}});
+    CHECK(AFCProtocol::afc_object_query()["AFC"] == json{"multiple_tool_mapping"});
 
     AFCProtocol::merge_afc_object(json{{"eventtime", 1.0}, {"status", {{"AFC", {{"multiple_tool_mapping", true}}}}}}, s);
     CHECK(s.multiple_mapping);
@@ -119,6 +119,35 @@ TEST_CASE("multiple tool mapping comes from the AFC object, which the webhook le
     CHECK(s.multiple_mapping);
     AFCProtocol::merge_afc_object(json{{"AFC", {{"multiple_tool_mapping", false}}}}, s);
     CHECK_FALSE(s.multiple_mapping);
+}
+
+TEST_CASE("a U1 reports its own print switches beside AFC", "[AFCProtocol]")
+{
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));
+    CHECK_FALSE(s.u1_print.present);
+    CHECK(AFCProtocol::to_json(s)["u1_print"].is_null());
+    CHECK(AFCProtocol::afc_object_query()["print_task_config"] ==
+          json{"auto_bed_leveling", "flow_calibrate", "time_lapse_camera"});
+
+    // Another Klipper printer has no print_task_config: nothing changes.
+    AFCProtocol::merge_afc_object(json{{"status", {{"AFC", {{"multiple_tool_mapping", true}}}}}}, s);
+    CHECK_FALSE(s.u1_print.present);
+
+    AFCProtocol::merge_afc_object(json{{"status",
+                                        {{"AFC", json::object()},
+                                         {"print_task_config",
+                                          {{"auto_bed_leveling", true}, {"flow_calibrate", false}, {"time_lapse_camera", true}}}}}},
+                                  s);
+    CHECK(s.u1_print.present);
+    CHECK(s.u1_print.bed_level);
+    CHECK_FALSE(s.u1_print.flow_calibrate);
+    CHECK(s.u1_print.time_lapse);
+    CHECK(AFCProtocol::to_json(s)["u1_print"] == json{{"bed_level", true}, {"flow_calibrate", false}, {"time_lapse_camera", true}});
+
+    AFCProtocol::U1PrintOptions options;
+    options.flow_calibrate = true;
+    CHECK(AFCProtocol::u1_print_options_gcode(options) == "SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=1 TIME_LAPSE_CAMERA=0");
 }
 
 TEST_CASE("AFC objects fallback finds lane objects and units", "[AFCProtocol]")
