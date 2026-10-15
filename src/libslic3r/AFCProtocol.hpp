@@ -139,8 +139,8 @@ nlohmann::json afc_object_query();
 void merge_afc_object(const nlohmann::json &status, Snapshot &out);
 
 /// G-code that sets the U1's print-start switches the way its own print
-/// popup does when the print is started without it:
-/// "SET_PRINT_PREFERENCES BED_LEVEL=1 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=1".
+/// popup does on U1 firmware 1.3.0 and later, one line per switch:
+/// "SET_PRINT_PREFERENCE KEY=bed_level VALUE=1\n...KEY=flow_calibrate...\n...KEY=time_lapse_camera...".
 std::string u1_print_options_gcode(const U1PrintOptions &options);
 
 /// Names of the per-lane Klipper objects in a `printer.objects.list` result

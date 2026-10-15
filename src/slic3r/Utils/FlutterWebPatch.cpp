@@ -9,7 +9,7 @@ namespace {
 
 // Bump when the rewrite changes, so web views fetch the new output instead of
 // an "immutable" copy cached from the previous one.
-const char *const k_query_tag = "afc=2";
+const char *const k_query_tag = "afc=3";
 
 bool starts_with(const std::string &s, const char *prefix) { return s.rfind(prefix, 0) == 0; }
 
@@ -114,6 +114,74 @@ bool patch_print_switches(std::string &js)
     return true;
 }
 
+bool is_ident_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$'; }
+
+// The print popup's Send stops on a filament it has no toolhead for, but only
+// when the pick is -1; one never picked at all is null and goes out as
+// "MAP_EXTRUDER=null", which the U1 refuses ("unable to parse null"):
+//   for(o=o.e.c,...;o.t();)if(J.n(o.gR(o).b,-1)){ ... ("Please select filament type" ...
+// A missing pick now stops Send the same way.
+bool patch_unpicked_send(std::string &js)
+{
+    static const std::string text = "\"Please select filament type\"";
+    const size_t             at   = js.find(text);
+    if (at == std::string::npos)
+        return false;
+    const std::string window = js.substr(at, 400);
+    static const std::regex check(R"re(if\(J\.([\w$]+)\(([\w$]+)\.gR\(\2\)\.b,-1\)\))re");
+    std::smatch m;
+    if (!std::regex_search(window, m, check))
+        return false;
+    const std::string pick = m[2].str() + ".gR(" + m[2].str() + ").b";
+    js.replace(at + size_t(m.position(0)), size_t(m.length(0)), "if(" + pick + "==null||J." + m[1].str() + "(" + pick + ",-1))");
+    return true;
+}
+
+// Over the cloud the popup connects to the U1 twice as it opens, and its ask
+// for the toolheads' filaments can go out on the first connection, whose
+// answer is then dropped. After three tries it gives up with
+//   $.h().k(0,B.i,"Failed to update machine filament config, e: "+a3+", error: "+a7,!0,a9)
+// inside updateMachineFilamentConfig:
+//   blB(c2){var s=0,...,m=this,...
+//   var $async$oU=A.i(function(c3,c4){...
+// and the picks stay empty until the popup is reopened. Ask again (the
+// connection that answers has the list by then), up to three times a minute.
+bool patch_filament_list_retry(std::string &js)
+{
+    static const std::string text = "\"Failed to update machine filament config, e: \"";
+    const size_t             at   = js.find(text);
+    if (at == std::string::npos)
+        return false;
+    static const std::regex logged(R"re(^"Failed to update machine filament config, e: "\+[\w$]+\+", error: "\+[\w$]+,!0,[\w$]+\))re");
+    std::smatch m;
+    const std::string after = js.substr(at, 200);
+    if (!std::regex_search(after, m, logged) || js.compare(at + size_t(m.length(0)), 18, "\ntry{(function(v){") == 0)
+        return false;
+    // The method it runs in, and the variable its body calls `this`.
+    static const std::string async_key = "var $async$";
+    const size_t             async_at  = js.rfind(async_key, at);
+    if (async_at == std::string::npos || at - async_at > 6000)
+        return false;
+    size_t name_end = async_at + async_key.size();
+    while (name_end < js.size() && is_ident_char(js[name_end]))
+        ++name_end;
+    const std::string method = js.substr(async_at + async_key.size(), name_end - async_at - async_key.size());
+    const size_t      this_at = js.rfind("=this,", async_at);
+    if (method.empty() || js.compare(name_end, 1, "=") != 0 || this_at == std::string::npos || async_at - this_at > 400)
+        return false;
+    size_t self_from = this_at;
+    while (self_from > 0 && is_ident_char(js[self_from - 1]))
+        --self_from;
+    const std::string self = js.substr(self_from, this_at - self_from);
+    if (self.empty())
+        return false;
+    const std::string retry = "\ntry{(function(v){var w=window,t=Date.now();if(!w.__afcMf||t-w.__afcMf.t>60000)w.__afcMf={t:t,n:0};"
+                              "if(++w.__afcMf.n<=3)setTimeout(function(){try{v." + method + "(\"afcRetry\")}catch(e){}},1000)})(" +
+                              self + ")}catch(e){}";
+    js.insert(at + size_t(m.length(0)), retry);
+    return true;
+}
+
 bool patch_dark_theme(std::string &js)
 {
     // The start-up "toggleTheme" sets isSystemTheme and isDark to false, e.g.
@@ -140,7 +208,9 @@ bool patch_main(std::string &js)
 {
     const bool dark     = patch_dark_theme(js);
     const bool switches = patch_print_switches(js);
-    return dark || switches;
+    const bool unpicked = patch_unpicked_send(js);
+    const bool retry    = patch_filament_list_retry(js);
+    return dark || switches || unpicked || retry;
 }
 
 } // namespace

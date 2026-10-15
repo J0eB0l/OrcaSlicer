@@ -433,8 +433,9 @@ void merge_afc_object(const json &status, Snapshot &out)
 
 std::string u1_print_options_gcode(const U1PrintOptions &options)
 {
-    return std::string("SET_PRINT_PREFERENCES BED_LEVEL=") + (options.bed_level ? "1" : "0") +
-           " FLOW_CALIBRATE=" + (options.flow_calibrate ? "1" : "0") + " TIME_LAPSE_CAMERA=" + (options.time_lapse ? "1" : "0");
+    const auto line = [](const char *key, bool on) { return std::string("SET_PRINT_PREFERENCE KEY=") + key + " VALUE=" + (on ? "1" : "0"); };
+    return line("bed_level", options.bed_level) + "\n" + line("flow_calibrate", options.flow_calibrate) + "\n" +
+           line("time_lapse_camera", options.time_lapse);
 }
 
 std::vector<std::string> lane_object_names(const json &objects_list, const std::vector<std::string> &lane_names)

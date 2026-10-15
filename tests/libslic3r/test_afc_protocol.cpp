@@ -147,7 +147,9 @@ TEST_CASE("a U1 reports its own print switches beside AFC", "[AFCProtocol]")
 
     AFCProtocol::U1PrintOptions options;
     options.flow_calibrate = true;
-    CHECK(AFCProtocol::u1_print_options_gcode(options) == "SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=1 TIME_LAPSE_CAMERA=0");
+    CHECK(AFCProtocol::u1_print_options_gcode(options) == "SET_PRINT_PREFERENCE KEY=bed_level VALUE=0\n"
+                                                           "SET_PRINT_PREFERENCE KEY=flow_calibrate VALUE=1\n"
+                                                           "SET_PRINT_PREFERENCE KEY=time_lapse_camera VALUE=0");
 }
 
 TEST_CASE("AFC objects fallback finds lane objects and units", "[AFCProtocol]")

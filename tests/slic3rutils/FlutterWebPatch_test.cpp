@@ -27,8 +27,8 @@ TEST_CASE("index.html sets the dark flag and tags the scripts", "[FlutterWebPatc
     REQUIRE(patch_flutter_web_file("index.html", html));
     CHECK(html.find("<body><script>window.__afcDark=") != std::string::npos);
     CHECK(html.find("path=2") != std::string::npos);
-    CHECK(html.find(R"(href="main.0123456789abcdef.js?afc=2")") != std::string::npos);
-    CHECK(html.find(R"(src="flutter_bootstrap.fedcba9876543210.js?afc=2")") != std::string::npos);
+    CHECK(html.find(R"(href="main.0123456789abcdef.js?afc=3")") != std::string::npos);
+    CHECK(html.find(R"(src="flutter_bootstrap.fedcba9876543210.js?afc=3")") != std::string::npos);
     CHECK(html.find(R"(src="flutter_overlay.0123456789abcdef.js")") != std::string::npos);
     CHECK(html.find("window.__afcPO={};") != std::string::npos);
 
@@ -41,7 +41,7 @@ TEST_CASE("bootstrap loads the tagged main script", "[FlutterWebPatch]")
 {
     std::string js = R"(_flutter.buildConfig={"builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.0123456789abcdef.js"},{}]};)";
     REQUIRE(patch_flutter_web_file("flutter_bootstrap.fedcba9876543210.js", js));
-    CHECK(js.find(R"("mainJsPath":"main.0123456789abcdef.js?afc=2")") != std::string::npos);
+    CHECK(js.find(R"("mainJsPath":"main.0123456789abcdef.js?afc=3")") != std::string::npos);
     CHECK_FALSE(patch_flutter_web_file("flutter_bootstrap.fedcba9876543210.js", js));
 }
 
@@ -92,6 +92,37 @@ TEST_CASE("print popup starts its switches from the AFC lane screen", "[FlutterW
     }
 }
 
+TEST_CASE("print popup will not send a filament with no toolhead", "[FlutterWebPatch]")
+{
+    std::string js = "if(n.ga0(n)){$.aw().$1$0(t.x).be(A.E(\"Please select filament type\",null,null))\nq=!1\ns=1\nbreak}"
+                     "for(o=o.e.c,o=o.ge6(o),o=o.gai(o);o.t();)if(J.n(o.gR(o).b,-1)){o=$.aw().Xm(0,null,null,null,null,t.x)";
+    REQUIRE(patch_flutter_web_file("main.0123456789abcdef.js", js));
+    CHECK(js.find("o.t();)if(o.gR(o).b==null||J.n(o.gR(o).b,-1)){o=$.aw()") != std::string::npos);
+    CHECK_FALSE(patch_flutter_web_file("main.0123456789abcdef.js", js));
+}
+
+TEST_CASE("print popup asks the U1 again when its filament list is lost", "[FlutterWebPatch]")
+{
+    const std::string failed = "$.h().k(0,B.i,\"Failed to update machine filament config, e: \"+a3+\", error: \"+a7,!0,a9)";
+    std::string js = "oU(a){return this.blB(a)},\nblB(c2){var s=0,r=A.m(t.na),q,p=2,o=[],n=[],m=this,l,k\n"
+                     "var $async$oU=A.i(function(c3,c4){if(c3===1){o.push(c4)\ns=p}for(;;)switch(s){case 4:p=3\nc1=o.pop()\n" +
+                     failed + "\nq=null\nn=[1]";
+    REQUIRE(patch_flutter_web_file("main.0123456789abcdef.js", js));
+    const size_t at = js.find(failed);
+    REQUIRE(at != std::string::npos);
+    const std::string after = js.substr(at + failed.size());
+    CHECK(after.rfind("\ntry{(function(v){", 0) == 0);
+    CHECK(after.find("setTimeout(function(){try{v.oU(\"afcRetry\")}catch(e){}},1000)})(m)}catch(e){}\nq=null") != std::string::npos);
+    CHECK_FALSE(patch_flutter_web_file("main.0123456789abcdef.js", js));
+
+    SECTION("no method around the log line is left alone") {
+        std::string bare = "case 4:" + failed + "\nq=null";
+        const std::string before = bare;
+        CHECK_FALSE(patch_flutter_web_file("main.0123456789abcdef.js", bare));
+        CHECK(bare == before);
+    }
+}
+
 TEST_CASE("other files are served as they are", "[FlutterWebPatch]")
 {
     std::string js = "q.a=q.b=!1\nA.HL(\"[ThemeVM] toggleTheme\")";
@@ -109,7 +140,7 @@ TEST_CASE("the bundled Snapmaker page can be patched", "[FlutterWebPatch]")
     // The bundled page names its scripts by content hash; follow index.html to them.
     const auto hashed = [&html](const std::string &prefix) {
         const size_t at  = html.find(prefix);
-        const size_t end = html.find("?afc=2", at);
+        const size_t end = html.find("?afc=3", at);
         REQUIRE(at != std::string::npos);
         REQUIRE(end != std::string::npos);
         return html.substr(at, end - at);
@@ -123,4 +154,7 @@ TEST_CASE("the bundled Snapmaker page can be patched", "[FlutterWebPatch]")
     CHECK(patch_flutter_web_file(main_name, main));
     CHECK(main.find("!!window.__afcDark") != std::string::npos);
     CHECK(main.find("(window.__afcPO||{}).bed_level?1:0") != std::string::npos);
+    CHECK(main.find("if(o.gR(o).b==null||J.n(o.gR(o).b,-1))") != std::string::npos);
+    CHECK(main.find("v.oU(\"afcRetry\")") != std::string::npos);
+    CHECK(main.find("})(m)}catch(e){}\nq=null") != std::string::npos);
 }
