@@ -90,6 +90,33 @@ TEST_CASE("AFC webhook status parses units and lanes", "[AFCProtocol]")
     CHECK(s.max_tool() == 5);
 }
 
+TEST_CASE("a lane AFC says is in the tool counts as loaded even when tool_loaded is false", "[AFCProtocol]")
+{
+    // A U1 toolhead lane after a reset: its extruder holds it, tool_loaded still reads false.
+    json fixture = webhook_fixture();
+    json &afc = fixture["status:"]["AFC"];
+    afc["Turtle_1"]["lane1"]["filament_status"] = "In Tool";
+    afc["Turtle_1"]["lane2"]["filament_status"] = "Ready";
+    afc["Bambu_AMS_1"]["lane5"]["filament_status"] = "In Tool";
+    afc["Bambu_AMS_1"]["lane5"]["tool_loaded"] = true;
+
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(fixture, s));
+    const AFCProtocol::Lane *l1 = s.find_lane("lane1");
+    const AFCProtocol::Lane *l2 = s.find_lane("lane2");
+    const AFCProtocol::Lane *l5 = s.find_lane("lane5");
+    const AFCProtocol::Lane *l6 = s.find_lane("lane6");
+    REQUIRE(l1 != nullptr);
+    REQUIRE(l2 != nullptr);
+    REQUIRE(l5 != nullptr);
+    REQUIRE(l6 != nullptr);
+    CHECK(l1->tool_loaded);
+    CHECK_FALSE(l2->tool_loaded);
+    CHECK(l5->tool_loaded);
+    CHECK_FALSE(l6->tool_loaded);
+    CHECK(AFCProtocol::to_json(s)["lanes"][0]["tool_loaded"] == true);
+}
+
 TEST_CASE("AFC status without the webhook wrapper and junk input", "[AFCProtocol]")
 {
     AFCProtocol::Snapshot s;

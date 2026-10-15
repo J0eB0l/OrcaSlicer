@@ -125,6 +125,10 @@ void fill_lane(const json &st, Lane &lane)
     lane.prep          = bool_field(st, "prep");
     lane.load          = bool_field(st, "load");
     lane.tool_loaded   = bool_field(st, "tool_loaded");
+    // AFC's own "In Tool" is its extruder holding the lane. A U1 toolhead lane keeps
+    // tool_loaded false after a reset or a filament swap while its extruder still holds it.
+    if (!lane.tool_loaded && str_field(st, "filament_status").compare(0, 7, "In Tool") == 0)
+        lane.tool_loaded = true;
     lane.status        = str_field(st, "status");
     lane.td            = str_field(st, "td1_td");
 }
