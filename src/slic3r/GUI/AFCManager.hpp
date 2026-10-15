@@ -92,6 +92,12 @@ public:
     };
     SpoolPreset spool_filament_preset(PresetBundle &bundle, int tool, const std::string &base);
 
+    // Put the filament preset a sync picked into the user's filament list, as
+    // ticking it there would. A hidden preset (Orca's library ones, say) has no
+    // row in the slot's combo, and Orca swaps it for the first compatible preset
+    // on the next load. True when it was hidden. UI thread only.
+    bool show_filament_preset(PresetBundle &bundle, const std::string &name);
+
     // Project filaments of the current plate, with grams used and whether the
     // sliced plate uses them. UI thread only.
     std::vector<AFCProtocol::ProjectFilament> project_filaments(nlohmann::json *details = nullptr) const;

@@ -9462,7 +9462,7 @@ void Sidebar::show_sync_filament_dialog()
                 }
         }
         int spool_pa_slots = 0;
-        int spool_presets_made = 0, spool_presets_updated = 0;
+        int spool_presets_made = 0, spool_presets_updated = 0, presets_shown = 0;
 
         for (size_t i = 0; i < effective_size; ++i) {
             // AFC: a slot kept for an empty lane is a gray Generic one, so it reads as empty.
@@ -9482,6 +9482,7 @@ void Sidebar::show_sync_filament_dialog()
                     preset_name = spool.name;
                 spool_presets_made += spool.created;
                 spool_presets_updated += spool.updated;
+                presets_shown += AFCManager::instance().show_filament_preset(*preset_bundle, preset_name);
             }
             if (!preset_name.empty()) {
                 preset_bundle->set_filament_preset(i, preset_name);
@@ -9518,7 +9519,7 @@ void Sidebar::show_sync_filament_dialog()
 
         const size_t num_filaments = effective_size;
         // New spool presets go into the filament tab's list too.
-        if (spool_presets_made > 0 || spool_presets_updated > 0)
+        if (spool_presets_made > 0 || spool_presets_updated > 0 || presets_shown > 0)
             if (Tab* tab = wxGetApp().get_tab(Preset::TYPE_FILAMENT))
                 tab->update_tab_ui();
         wxGetApp().plater()->on_filaments_change(num_filaments);

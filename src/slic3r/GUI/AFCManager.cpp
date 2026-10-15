@@ -712,6 +712,19 @@ AFCManager::SpoolPreset AFCManager::spool_filament_preset(PresetBundle &bundle, 
     return out;
 }
 
+bool AFCManager::show_filament_preset(PresetBundle &bundle, const std::string &name)
+{
+    Preset *preset = name.empty() ? nullptr : bundle.filaments.find_preset(name);
+    if (preset == nullptr || preset->is_visible)
+        return false;
+    preset->is_visible = true;
+    // System presets are shown by name from the installed filaments list, so it lasts past a restart.
+    if (preset->is_system)
+        wxGetApp().app_config->set(AppConfig::SECTION_FILAMENTS, preset->name, "true");
+    BOOST_LOG_TRIVIAL(warning) << "AFC sync: added \"" << preset->name << "\" to the filament list";
+    return true;
+}
+
 std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *details) const
 {
     std::vector<AFCProtocol::ProjectFilament> out;
