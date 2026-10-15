@@ -416,44 +416,62 @@ void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::
         m_flow_k_read.notify_all();
     };
     for (const int spool : spools) {
+        // Moonraker's Spoolman proxy and AFC's own Spoolman address are asked together and
+        // the first answer wins. A U1 that leaves the proxy unanswered over MQTT holds the
+        // call for the link's 80 s timeout, long after a sync has gone ahead without the K.
+        struct Race
+        {
+            std::mutex mutex;
+            int        pending = 0;
+            bool       done    = false;
+        };
+        auto race     = std::make_shared<Race>();
+        race->pending = spoolman_url.empty() ? 1 : 2;
+        auto answer   = [store, spool, race](double k, bool ok) {
+            {
+                std::lock_guard<std::mutex> lock(race->mutex);
+                if (race->done)
+                    return;
+                --race->pending;
+                if (!ok && race->pending > 0)
+                    return;
+                race->done = true;
+            }
+            store(spool, ok ? k : -1);
+        };
         const json params = {{"request_method", "GET"}, {"path", "/v1/spool/" + std::to_string(spool)}, {"use_v2_response", true}};
-        host->async_jsonrpc_call("server.spoolman.proxy", params, [store, spool, spoolman_url](const json &res) {
-            const json *spool_json = nullptr;
+        host->async_jsonrpc_call("server.spoolman.proxy", params, [answer, spool](const json &res) {
             if (res.is_object() && res.count("data") && res["data"].is_object()) {
                 const json &data = res["data"];
                 // use_v2_response: a failed Spoolman call still answers, with its error inside.
-                if (!(data.contains("error") && !data["error"].is_null()))
-                    spool_json = &data;
-            }
-            if (spool_json != nullptr) {
-                store(spool, AFCProtocol::spool_flow_k(*spool_json));
-                return;
+                if (!(data.contains("error") && !data["error"].is_null())) {
+                    answer(AFCProtocol::spool_flow_k(data), true);
+                    return;
+                }
             }
             BOOST_LOG_TRIVIAL(warning) << "AFC: Moonraker could not read Spoolman spool " << spool << ": "
                                        << (res.is_object() && res.count("error") ? res["error"].dump() :
                                            res.is_object() && res.count("data") ? res["data"].value("error", json()).dump() : res.dump());
-            // A printer whose Moonraker has no [spoolman] still has AFC's own Spoolman address: ask it directly.
-            if (spoolman_url.empty()) {
-                store(spool, -1);
-                return;
-            }
-            std::string base = spoolman_url;
-            while (!base.empty() && base.back() == '/')
-                base.pop_back();
-            Http::get(base + "/api/v1/spool/" + std::to_string(spool))
-                .timeout_connect(3)
-                .timeout_max(6)
-                .on_complete([store, spool](std::string body, unsigned) {
-                    const json spool_json = json::parse(body, nullptr, false);
-                    store(spool, spool_json.is_discarded() ? -1 : AFCProtocol::spool_flow_k(spool_json));
-                })
-                .on_error([store, spool, base](std::string, std::string error, unsigned status) {
-                    BOOST_LOG_TRIVIAL(warning) << "AFC: Spoolman at " << base << " could not be read for spool " << spool << ": "
-                                               << error << " (" << status << ")";
-                    store(spool, -1);
-                })
-                .perform();
+            answer(-1, false);
         });
+        if (spoolman_url.empty())
+            continue;
+        std::string base = spoolman_url;
+        while (!base.empty() && base.back() == '/')
+            base.pop_back();
+        Http::get(base + "/api/v1/spool/" + std::to_string(spool))
+            .timeout_connect(3)
+            .timeout_max(6)
+            .on_complete([answer](std::string body, unsigned) {
+                const json spool_json = json::parse(body, nullptr, false);
+                answer(spool_json.is_object() ? AFCProtocol::spool_flow_k(spool_json) : -1, spool_json.is_object());
+            })
+            .on_error([answer, spool, base](std::string, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(warning) << "AFC: Spoolman at " << base << " could not be read for spool " << spool << ": "
+                                           << error << " (" << status << ")";
+                answer(-1, false);
+            })
+            .perform();
     }
 }
 
