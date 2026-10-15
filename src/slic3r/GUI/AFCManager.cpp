@@ -653,7 +653,11 @@ AFCManager::SpoolPreset AFCManager::spool_filament_preset(PresetBundle &bundle, 
                 break;
         }
     }
-    if (found != nullptr) {
+    // A system preset cannot hold the spool's pressure advance, so a spool with a
+    // saved K gets its own copy of it below and the preset shows what the slot prints with.
+    const bool        copy_system = found != nullptr && found->is_system && lane->flow_k >= 0;
+    const std::string found_name  = found != nullptr ? found->name : std::string();
+    if (found != nullptr && !copy_system) {
         out.name = found->name;
         DynamicPrintConfig config = found->config;
         if (made_by_sync(*found) && apply_spool_values(*lane, config)) {
@@ -668,12 +672,14 @@ AFCManager::SpoolPreset AFCManager::spool_filament_preset(PresetBundle &bundle, 
         return out;
     }
 
-    const Preset     *from    = base.empty() ? nullptr : filaments.find_preset(base);
+    const Preset     *from    = copy_system ? found : base.empty() ? nullptr : filaments.find_preset(base);
     const std::string printer = bundle.printers.get_selected_preset_name();
     const std::string name    = aliases.front() + " @" + printer;
+    out.name                  = found_name;
     // A preset of that name this printer cannot use is someone else's: leave it be.
     if (from == nullptr || printer.empty() || filaments.find_preset(name) != nullptr)
         return out;
+    const std::string from_name = from->name;
     const std::string filament_id = spool_filament_id(filaments, aliases.front());
     const std::string vendor      = boost::trim_copy(lane->vendor);
     const AFCProtocol::Lane spool = *lane;
@@ -706,7 +712,7 @@ AFCManager::SpoolPreset AFCManager::spool_filament_preset(PresetBundle &bundle, 
     }
     if (!made || filaments.find_preset(name) == nullptr)
         return out;
-    BOOST_LOG_TRIVIAL(info) << "AFC: made filament preset \"" << name << "\" for the spool on T" << tool << " from \"" << base << "\"";
+    BOOST_LOG_TRIVIAL(warning) << "AFC sync: made filament preset \"" << name << "\" for the spool on T" << tool << " from \"" << from_name << "\"";
     out.name    = name;
     out.created = true;
     return out;
