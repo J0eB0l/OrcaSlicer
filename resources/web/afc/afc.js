@@ -15,6 +15,9 @@
   const VIEW = params.get('view') === 'print' ? 'print' : 'panel';
   // Print view on a U1 preset: Snapmaker's own print popup opens next and sends the file.
   const SNAPMAKER_SENDS = params.get('sender') === 'snapmaker';
+  // Upload without a print: the lane picks go back to the slicer, which writes them
+  // into the file, so AFC's maps stay as they are until that file starts.
+  const UPLOAD_ONLY = params.get('mode') === 'upload';
   const darkParam = params.get('dark_mode');
   if (darkParam === '1' || darkParam === 'true' ||
       (darkParam === null && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -179,7 +182,7 @@
       stateJson = json;
       if (data && data.error) toast(data.error, true);
       if (VIEW === 'print' && mapping === null) resetMapping();
-      if (VIEW === 'print' && u1Print === null && data && data.afc && data.afc.u1_print) u1Print = Object.assign({}, data.afc.u1_print);
+      if (VIEW === 'print' && !UPLOAD_ONLY && u1Print === null && data && data.afc && data.afc.u1_print) u1Print = Object.assign({}, data.afc.u1_print);
       if (!unchanged) render();
     } catch (e) {
       if (!state) renderError(e.message);
@@ -594,10 +597,13 @@
       (state.project.sliced ? '' : '<div class="summary"><span class="pill warn">Slice the plate to see grams and which filaments it uses</span></div>') +
       '<div class="map-head"><div>Plate filament</div><div></div><div>AFC lane</div></div>' + rows + '</div>' +
       printOptions() +
-      '<div class="footer"><span class="hint">Applying sets each T number to its lane with SET_MAP.</span><div class="grow"></div>' +
+      '<div class="footer"><span class="hint">' + (UPLOAD_ONLY ? 'The file sets each T number to its lane with SET_MAP when the print starts.' :
+        'Applying sets each T number to its lane with SET_MAP.') + '</span><div class="grow"></div>' +
       '<button class="btn" id="cancel">Cancel</button>' +
-      '<button class="btn" id="skip" title="Print with the T map AFC has now">Keep current map</button>' +
-      '<button class="btn primary" id="apply"' + (blocking ? ' disabled' : '') + '>' + (SNAPMAKER_SENDS && u1Print ? 'Apply and print' : 'Apply and continue') + '</button></div>';
+      (UPLOAD_ONLY ? '<button class="btn" id="skip" title="Upload the file as sliced; the print uses the T map AFC has when it starts">Upload without lanes</button>' :
+        '<button class="btn" id="skip" title="Print with the T map AFC has now">Keep current map</button>') +
+      '<button class="btn primary" id="apply"' + (blocking ? ' disabled' : '') + '>' +
+        (UPLOAD_ONLY ? 'Upload with these lanes' : SNAPMAKER_SENDS && u1Print ? 'Apply and print' : 'Apply and continue') + '</button></div>';
 
     document.getElementById('auto').onclick = () => { resetMapping(); render(); };
     document.getElementById('refresh').onclick = () => load(true);
@@ -705,6 +711,10 @@
     busy = true;
     $app.classList.add('busy');
     try {
+      if (UPLOAD_ONLY) {
+        await finish('continue', applyMap ? filaments().filter((f) => f.used).map((f) => ({ tool: f.id, lane: mapping[f.id] })) : []);
+        return;
+      }
       if (applyMap) {
         const pairs = filaments().filter((f) => f.used).map((f) => ({ tool: f.id, lane: mapping[f.id] }));
         const data = await call('sw_AFC_ApplyMapping', { mapping: pairs });
@@ -723,8 +733,8 @@
     }
   }
 
-  function finish(action) {
-    return call('sw_AFC_FinishPrintMapping', { action: action, u1_print: action === 'continue' ? u1Print : null })
+  function finish(action, lanes) {
+    return call('sw_AFC_FinishPrintMapping', { action: action, u1_print: action === 'continue' ? u1Print : null, mapping: lanes || [] })
       .catch((e) => toast(e.message, true));
   }
 

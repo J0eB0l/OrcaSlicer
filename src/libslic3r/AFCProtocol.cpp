@@ -9,6 +9,8 @@
 #include <map>
 #include <set>
 
+#include <boost/nowide/fstream.hpp>
+
 namespace Slic3r {
 namespace AFCProtocol {
 
@@ -1104,8 +1106,8 @@ bool build_lane_edit_gcode(const Snapshot &snapshot, const std::string &lane_nam
     return true;
 }
 
-bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
-                              std::vector<std::string> &gcode, std::string &error)
+static bool check_tool_mapping(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
+                               std::string &error)
 {
     std::set<int>         tools;
     std::set<std::string> lanes;
@@ -1128,6 +1130,14 @@ bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::p
             return false;
         }
     }
+    return true;
+}
+
+bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
+                              std::vector<std::string> &gcode, std::string &error)
+{
+    if (!check_tool_mapping(snapshot, tool_to_lane, error))
+        return false;
 
     // Replay SET_MAP's swap semantics so lanes already in place are skipped.
     std::map<std::string, std::vector<std::string>> maps;
@@ -1159,6 +1169,62 @@ bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::p
         }
     }
     gcode.insert(gcode.end(), out.begin(), out.end());
+    return true;
+}
+
+bool file_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
+                             std::vector<std::string> &gcode, std::string &error)
+{
+    if (!check_tool_mapping(snapshot, tool_to_lane, error))
+        return false;
+    // AFC's maps when the file starts are unknown now, so nothing is skipped. Without
+    // multiple mapping each SET_MAP swaps with the T's old lane, which never holds a T
+    // placed earlier in this list, so every T ends on its lane.
+    for (const auto &[tool, lane] : tool_to_lane)
+        gcode.push_back("SET_MAP LANE=" + lane + " MAP=T" + std::to_string(tool));
+    return true;
+}
+
+bool write_gcode_with_prelude(const std::string &src, const std::string &dst, const std::vector<std::string> &lines,
+                              std::string &error)
+{
+    boost::nowide::ifstream in(src.c_str(), std::ios::binary);
+    if (!in) {
+        error = "cannot read " + src;
+        return false;
+    }
+    boost::nowide::ofstream out(dst.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = "cannot write " + dst;
+        return false;
+    }
+    auto is_command = [](const std::string &line) {
+        const size_t i = line.find_first_not_of(" \t\r");
+        return i != std::string::npos && line[i] != ';';
+    };
+    // Copy the comment header line by line, then the rest of the file in one go.
+    std::string line;
+    bool        rest = false;
+    while (true) {
+        const std::streampos at = in.tellg();
+        if (!std::getline(in, line))
+            break;
+        if (is_command(line)) {
+            in.seekg(at);
+            rest = true;
+            break;
+        }
+        out << line << '\n';
+    }
+    for (const std::string &l : lines)
+        out << l << '\n';
+    if (rest)
+        out << in.rdbuf();
+    out.flush();
+    if (!out || (rest && in.bad())) {
+        error = "cannot write " + dst;
+        return false;
+    }
     return true;
 }
 
@@ -1372,6 +1438,15 @@ json u1_cloud_print_params(const std::string &url, const std::string &checksum, 
                 {"print_plate", 1},
                 {"options", u1_print_options_json(options, map_table)},
                 {"extra_info", {{"print_task_id", ""}}}};
+}
+
+json u1_cloud_upload_params(const std::string &url, const std::string &checksum, size_t size)
+{
+    json params = u1_cloud_print_params(url, checksum, size, {}, {});
+    params["auto_start"] = false;
+    params.erase("options");
+    params.erase("extra_info");
+    return params;
 }
 
 json cloud_device_id(const json &devices, const std::string &sn)

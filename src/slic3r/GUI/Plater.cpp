@@ -21832,6 +21832,40 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.storage     = dlg.storage();
 
 
+        // AFC: an upload without a print gets the lane screen too, and the slicer stores
+        // the file on the U1 itself. The lane picks go into the file, set with SET_MAP
+        // when it starts, because AFC's maps can change before then.
+        if (is_snapmaker_u1 && dlg.post_action() == PrintHostPostUploadAction::None) {
+            bool                                     shown = false;
+            std::vector<std::pair<int, std::string>> lanes;
+            if (!AFCPrintDialog::map_lanes_for_upload(this, shown, lanes))
+                return;
+            if (shown) {
+                std::string error;
+                if (!lanes.empty()) {
+                    const fs::path mapped = AFCPrintDialog::gcode_with_lane_map(upload_job.upload_data.source_path, lanes, error);
+                    if (mapped.empty()) {
+                        show_error(this, error);
+                        return;
+                    }
+                    upload_job.upload_data.source_path = mapped;
+                }
+                switch (AFCPrintDialog::upload_u1_file(this, upload_job.upload_data.source_path, upload_job.upload_data.upload_path,
+                                                       error)) {
+                case AFCPrintDialog::U1Send::Sent:
+                    get_notification_manager()->push_notification(NotificationType::CustomNotification,
+                                                                  NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                                                  _u8L("The file was uploaded to the printer."));
+                    if (dlg.switch_to_device_tab())
+                        wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+                    return;
+                case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
+                case AFCPrintDialog::U1Send::Canceled: return;
+                case AFCPrintDialog::U1Send::NotSent: break; // Snapmaker's popup below sends the same file
+                }
+            }
+        }
+
         // AFC: map every project filament to an AFC lane before the Snapmaker
         // print dialog, which only knows the four toolheads. The U1 print
         // switches picked there open Snapmaker's dialog already set.

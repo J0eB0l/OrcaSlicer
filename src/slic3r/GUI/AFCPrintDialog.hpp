@@ -4,6 +4,8 @@
 #include "libslic3r/AFCProtocol.hpp"
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <boost/filesystem/path.hpp>
 
@@ -26,17 +28,31 @@ public:
 
     // Shows the page modally. True when the user applied a mapping and
     // wants to go on to the print dialog. `snapmaker_sends`: Snapmaker's own
-    // print popup opens next and sends the U1 switches itself.
-    bool run(bool snapmaker_sends);
+    // print popup opens next and sends the U1 switches itself. `upload_only`:
+    // the file is stored on the printer, not started, so the page hands its
+    // lane picks back instead of setting them on AFC.
+    bool run(bool snapmaker_sends, bool upload_only = false);
 
-    // Called by the page bridge (sw_AFC_FinishPrintMapping).
-    static void finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print = {});
+    // Called by the page bridge (sw_AFC_FinishPrintMapping). `mapping` holds the
+    // T(n) -> lane picks of an upload-only page.
+    static void finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print = {},
+                              const std::vector<std::pair<int, std::string>> &mapping = {});
 
     // Reads AFC from the printer and, when it has AFC, runs the mapping step.
     // False only when the user canceled; a printer without AFC passes straight through.
     // `u1_print` gets the U1 switches picked on the page (present only on a U1).
     static bool map_lanes_before_print(wxWindow *parent, bool snapmaker_sends = false,
                                        AFCProtocol::U1PrintOptions *u1_print = nullptr);
+
+    // The mapping step for a file uploaded to the U1 and started later. False only
+    // when the user canceled. `shown` is false when the printer has no AFC; `mapping`
+    // gets the T(n) -> lane picks, empty when the user kept AFC's map.
+    static bool map_lanes_for_upload(wxWindow *parent, bool &shown, std::vector<std::pair<int, std::string>> &mapping);
+
+    // A copy of `gcode` that sets `mapping` with SET_MAP before its first command, so
+    // the picks hold whenever the print starts. Empty, with `error` set, on failure.
+    static boost::filesystem::path gcode_with_lane_map(const boost::filesystem::path &gcode,
+                                                       const std::vector<std::pair<int, std::string>> &mapping, std::string &error);
 
     // Query string that opens Snapmaker's print popup with these switches on
     // (read by the flutter_web patch), empty when there are none.
@@ -55,7 +71,16 @@ public:
                                 const boost::filesystem::path &upload_path,
                                 const AFCProtocol::U1PrintOptions &u1_print, std::string &error);
 
+    // Stores the file on the connected U1 without starting it: the LAN upload, or
+    // away from home Snapmaker's cloud with auto_start off. Sent means it is there.
+    static U1Send upload_u1_file(wxWindow *parent, const boost::filesystem::path &gcode,
+                                 const boost::filesystem::path &upload_path, std::string &error);
+
 private:
+    // send_u1_print and upload_u1_file; null `start_options` uploads without starting.
+    static U1Send send_to_u1(wxWindow *parent, const boost::filesystem::path &gcode, const boost::filesystem::path &upload_path,
+                             const AFCProtocol::U1PrintOptions *start_options, std::string &error);
+
     void OnScriptMessage(wxWebViewEvent &evt);
     void OnClose(wxCloseEvent &evt);
     void end(bool proceed);
@@ -64,6 +89,7 @@ private:
     bool                        m_proceed{false};
     bool                        m_ended{false};
     AFCProtocol::U1PrintOptions m_u1_print;
+    std::vector<std::pair<int, std::string>> m_mapping;
 
     static AFCPrintDialog *s_active;
 };

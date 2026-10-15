@@ -116,16 +116,18 @@ AFCPrintDialog::~AFCPrintDialog()
         SSWCP::on_webview_delete(m_browser);
 }
 
-bool AFCPrintDialog::run(bool snapmaker_sends)
+bool AFCPrintDialog::run(bool snapmaker_sends, bool upload_only)
 {
     if (m_browser == nullptr)
         return true; // no webview: do not block printing
     const wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
-                                            "/web/afc/index.html?view=print" + (snapmaker_sends ? "&sender=snapmaker" : ""));
+                                            "/web/afc/index.html?view=print" + (snapmaker_sends ? "&sender=snapmaker" : "") +
+                                            (upload_only ? "&mode=upload" : ""));
     m_browser->LoadURL(wxGetApp().get_international_url(url));
     m_proceed  = false;
     m_ended    = false;
     m_u1_print = {};
+    m_mapping.clear();
     s_active  = this;
     ShowModal();
     s_active = nullptr;
@@ -153,6 +155,43 @@ bool AFCPrintDialog::map_lanes_before_print(wxWindow *parent, bool snapmaker_sen
     return proceed;
 }
 
+bool AFCPrintDialog::map_lanes_for_upload(wxWindow *parent, bool &shown, std::vector<std::pair<int, std::string>> &mapping)
+{
+    shown = false;
+    mapping.clear();
+    const std::shared_ptr<PrintHost> host = AFCManager::afc_host();
+    if (!host)
+        return true;
+    bool present = false;
+    {
+        wxBusyCursor busy;
+        present = AFCManager::instance().refresh_blocking(host, 4000);
+    }
+    if (!present)
+        return true;
+    shown = true;
+    AFCPrintDialog dialog(parent);
+    const bool     proceed = dialog.run(false, true);
+    if (proceed)
+        mapping = dialog.m_mapping;
+    return proceed;
+}
+
+boost::filesystem::path AFCPrintDialog::gcode_with_lane_map(const boost::filesystem::path                 &gcode,
+                                                            const std::vector<std::pair<int, std::string>> &mapping, std::string &error)
+{
+    std::vector<std::string> lines;
+    if (!AFCProtocol::file_tool_mapping_gcode(AFCManager::instance().snapshot(), mapping, lines, error))
+        return {};
+    lines.insert(lines.begin(), "; AFC lanes picked in Snapmaker Orca when this file was uploaded");
+    boost::filesystem::path out = gcode;
+    out.replace_extension(".afc" + gcode.extension().string());
+    if (!AFCProtocol::write_gcode_with_prelude(u8_path(gcode), u8_path(out), lines, error))
+        return {};
+    BOOST_LOG_TRIVIAL(warning) << "AFC print: lane map written into " << u8_path(out) << ": " << lines.size() - 1 << " SET_MAP lines";
+    return out;
+}
+
 std::string AFCPrintDialog::preprint_query(const AFCProtocol::U1PrintOptions &u1_print)
 {
     if (!u1_print.present)
@@ -166,14 +205,30 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
                                                      const boost::filesystem::path &upload_path,
                                                      const AFCProtocol::U1PrintOptions &u1_print, std::string &error)
 {
+    return send_to_u1(parent, gcode, upload_path, &u1_print, error);
+}
+
+AFCPrintDialog::U1Send AFCPrintDialog::upload_u1_file(wxWindow *parent, const boost::filesystem::path &gcode,
+                                                      const boost::filesystem::path &upload_path, std::string &error)
+{
+    return send_to_u1(parent, gcode, upload_path, nullptr, error);
+}
+
+AFCPrintDialog::U1Send AFCPrintDialog::send_to_u1(wxWindow *parent, const boost::filesystem::path &gcode,
+                                                  const boost::filesystem::path &upload_path,
+                                                  const AFCProtocol::U1PrintOptions *start_options, std::string &error)
+{
     error.clear();
     const std::shared_ptr<PrintHost> host = AFCManager::device_host();
     if (!host)
         return U1Send::NotSent;
+    const bool                        print    = start_options != nullptr;
+    const AFCProtocol::U1PrintOptions u1_print = print ? *start_options : AFCProtocol::U1PrintOptions{};
 
-    // The map table comes from AFC as the lane screen just left it.
+    // The map table comes from AFC as the lane screen just left it. An upload only
+    // stores the file, so it needs none.
     std::vector<std::pair<int, int>> table;
-    {
+    if (print) {
         wxBusyCursor busy;
         AFCManager &afc = AFCManager::instance();
         if (!afc.refresh_blocking(host, 4000) || !AFCProtocol::u1_map_table(afc.snapshot(), afc.project_filaments(), table, error)) {
@@ -205,7 +260,7 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
 
     const std::string name   = u8_path(upload_path.filename());
     const std::string folder = u8_path(upload_path.parent_path());
-    std::thread([job, host, gcode, name, folder, u1_print, table, account, signed_in, serial]() {
+    std::thread([job, host, gcode, name, folder, print, u1_print, table, account, signed_in, serial]() {
         auto finish = [&job](U1Send result, const std::string &error) {
             job->result = result;
             job->error  = error;
@@ -221,6 +276,9 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
             BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 answered " << method << " with " << res.dump();
             if (err == "send failed" || method_missing(res))
                 return finish(U1Send::NotSent, "");
+            if (!print)
+                return finish(U1Send::Failed, err == "timeout" ? "The printer did not confirm it took the file. Check its file list before uploading again." :
+                                                                 "The printer refused the file: " + err);
             if (err == "timeout")
                 return finish(U1Send::Failed, "The printer did not confirm the print start. Check the printer before sending again.");
             return finish(U1Send::Failed, "The printer refused the print: " + err);
@@ -271,6 +329,10 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
                 break; // the U1 answered and refused it; another address will not change that
         }
         if (!stored.empty()) {
+            if (!print) {
+                BOOST_LOG_TRIVIAL(warning) << "AFC print: uploaded " << stored << " to the U1 without starting it";
+                return finish(U1Send::Sent, "");
+            }
             if (!advance(1, 2))
                 return finish(U1Send::Canceled, "");
             const json params = AFCProtocol::u1_local_print_params(stored, u1_print, table);
@@ -304,6 +366,11 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
         }
         if (!advance(1, 2))
             return finish(U1Send::Canceled, "");
+        if (!print) {
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: storing " << name << " on the U1 from the cloud without starting it";
+            return start("server.files.start_cloud_print", AFCProtocol::u1_cloud_upload_params(uploaded.url, uploaded.checksum, uploaded.size),
+                         90000);
+        }
         const json params = AFCProtocol::u1_cloud_print_params(uploaded.url, uploaded.checksum, uploaded.size, u1_print, table);
         BOOST_LOG_TRIVIAL(warning) << "AFC print: starting " << name << " on the U1 from the cloud with " << params["options"].dump();
         // The U1 may fetch the file before it answers.
@@ -311,7 +378,7 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
     }).detach();
 
     {
-        ProgressDialog dlg(_L("Send to printer"), _L("Finding the printer on the network"), 100, parent,
+        ProgressDialog dlg(print ? _L("Send to printer") : _L("Upload to printer"), _L("Finding the printer on the network"), 100, parent,
                            wxPD_APP_MODAL | wxPD_AUTO_HIDE | wxPD_CAN_ABORT);
         bool canceling = false;
         while (!job->finished) {
@@ -323,7 +390,7 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
                 go = dlg.Update(std::min(99, job->percent.load()),
                                 job->cloud ? _L("Uploading through Snapmaker's cloud") : _L("Uploading to the printer"));
             else if (stage == 2)
-                go = dlg.Pulse(_L("Starting the print"));
+                go = dlg.Pulse(print ? _L("Starting the print") : _L("The printer is fetching the file"));
             if (!go && !canceling) {
                 canceling = true;
                 // Too late once the start went out: then its answer still decides.
@@ -339,11 +406,14 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
     return job->result;
 }
 
-void AFCPrintDialog::finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print)
+void AFCPrintDialog::finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print,
+                                   const std::vector<std::pair<int, std::string>> &mapping)
 {
     if (s_active) {
-        if (proceed)
+        if (proceed) {
             s_active->m_u1_print = u1_print;
+            s_active->m_mapping  = mapping;
+        }
         s_active->end(proceed);
     }
 }

@@ -224,9 +224,18 @@ void SSWCP_AFC_Instance::sw_AFC_FinishPrintMapping()
 {
     const std::string                 action = m_param_data.value("action", "cancel");
     const AFCProtocol::U1PrintOptions u1     = u1_print_options(m_param_data.value("u1_print", json()));
+    // An upload-only page hands back its lane picks; they go into the file, not to AFC.
+    std::vector<std::pair<int, std::string>> mapping;
+    if (m_param_data.count("mapping") && m_param_data["mapping"].is_array()) {
+        for (const json &m : m_param_data["mapping"]) {
+            if (!m.is_object() || !m.count("tool") || !m["tool"].is_number_integer() || !m.count("lane") || !m["lane"].is_string())
+                return fail("mapping entries need an integer tool and a lane name");
+            mapping.emplace_back(m["tool"].get<int>(), m["lane"].get<std::string>());
+        }
+    }
     send_to_js();
     finish_job();
-    wxGetApp().CallAfter([action, u1]() { AFCPrintDialog::finish_active(action == "continue", u1); });
+    wxGetApp().CallAfter([action, u1, mapping]() { AFCPrintDialog::finish_active(action == "continue", u1, mapping); });
 }
 
 void SSWCP_AFC_Instance::sw_AFC_SetPrintOptions()

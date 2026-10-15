@@ -242,6 +242,18 @@ bool build_lane_edit_gcode(const Snapshot &snapshot, const std::string &lane, co
 bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
                               std::vector<std::string> &gcode, std::string &error);
 
+/// SET_MAP lines that put each T(tool) on the given lane whatever AFC maps when
+/// they run, for a file uploaded now and started later. Every pair gets its line
+/// (SET_MAP ignores a T already on its lane); checked like build_tool_mapping_gcode.
+bool file_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
+                             std::vector<std::string> &gcode, std::string &error);
+
+/// Copies the G-code file `src` to `dst` with `lines` inserted before its first
+/// command, after the slicer's comment header and thumbnails. False, with `error`
+/// set, when a file cannot be read or written.
+bool write_gcode_with_prelude(const std::string &src, const std::string &dst, const std::vector<std::string> &lines,
+                              std::string &error);
+
 /// G-code for a physical lane action from the device panel:
 ///   "load"   -> CHANGE_TOOL LANE=<lane>  (swap this lane into its toolhead)
 ///   "unload" -> TOOL_UNLOAD LANE=<lane>  (pull it back out of the toolhead)
@@ -301,6 +313,10 @@ std::string uploaded_path(const nlohmann::json &answer);
 /// Snapmaker's cloud holds at `url` and starts it, as Snapmaker's popup does.
 nlohmann::json u1_cloud_print_params(const std::string &url, const std::string &checksum, size_t size,
                                      const U1PrintOptions &options, const std::vector<std::pair<int, int>> &map_table);
+
+/// Params for server.files.start_cloud_print that only store the file on the U1
+/// (auto_start off), as Snapmaker's popup sends an upload without a print.
+nlohmann::json u1_cloud_upload_params(const std::string &url, const std::string &checksum, size_t size);
 
 /// The cloud id of the device with serial `sn` in /user/device/list's data,
 /// null when it is not there.
