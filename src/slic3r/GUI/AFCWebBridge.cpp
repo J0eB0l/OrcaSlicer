@@ -192,7 +192,29 @@ void SSWCP_AFC_Instance::sw_AFC_ApplyMapping()
         return fail(error);
 
     auto self = std::static_pointer_cast<SSWCP_AFC_Instance>(shared_from_this());
-    AFCManager::send_gcode(host, gcode, [self](const std::string &err) { self->reply_state(true, true, err); });
+    if (!m_param_data.value("idle_only", false)) {
+        AFCManager::send_gcode(host, gcode, [self](const std::string &err) { self->reply_state(true, true, err); });
+        return;
+    }
+    // An upload maps lanes for a print that starts later, so a print running now
+    // must keep its lanes.
+    host->async_jsonrpc_call("printer.objects.query", json{{"objects", {{"print_stats", {"state"}}}}},
+                             [self, host, gcode](const json &res) {
+                                 std::string state;
+                                 try {
+                                     state = res.at("data").at("status").at("print_stats").at("state").get<std::string>();
+                                 } catch (...) {}
+                                 if (state == "printing" || state == "paused") {
+                                     self->reply_state(false, true, "The printer is " + state +
+                                                                        ", so AFC's lanes stay as they are. Upload without lanes and map them when the print starts.");
+                                     return;
+                                 }
+                                 if (state.empty()) {
+                                     self->reply_state(false, true, "Could not read the printer state, so AFC's lanes were not changed");
+                                     return;
+                                 }
+                                 AFCManager::send_gcode(host, gcode, [self](const std::string &err) { self->reply_state(true, true, err); });
+                             });
 }
 
 void SSWCP_AFC_Instance::sw_AFC_SyncToSlicer()
@@ -224,18 +246,9 @@ void SSWCP_AFC_Instance::sw_AFC_FinishPrintMapping()
 {
     const std::string                 action = m_param_data.value("action", "cancel");
     const AFCProtocol::U1PrintOptions u1     = u1_print_options(m_param_data.value("u1_print", json()));
-    // An upload-only page hands back its lane picks; they go into the file, not to AFC.
-    std::vector<std::pair<int, std::string>> mapping;
-    if (m_param_data.count("mapping") && m_param_data["mapping"].is_array()) {
-        for (const json &m : m_param_data["mapping"]) {
-            if (!m.is_object() || !m.count("tool") || !m["tool"].is_number_integer() || !m.count("lane") || !m["lane"].is_string())
-                return fail("mapping entries need an integer tool and a lane name");
-            mapping.emplace_back(m["tool"].get<int>(), m["lane"].get<std::string>());
-        }
-    }
     send_to_js();
     finish_job();
-    wxGetApp().CallAfter([action, u1, mapping]() { AFCPrintDialog::finish_active(action == "continue", u1, mapping); });
+    wxGetApp().CallAfter([action, u1]() { AFCPrintDialog::finish_active(action == "continue", u1); });
 }
 
 void SSWCP_AFC_Instance::sw_AFC_SetPrintOptions()

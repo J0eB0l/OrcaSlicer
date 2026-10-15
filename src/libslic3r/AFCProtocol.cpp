@@ -448,6 +448,13 @@ std::string u1_print_options_gcode(const U1PrintOptions &options)
            line("time_lapse_camera", options.time_lapse);
 }
 
+std::string u1_file_print_options_gcode(const U1PrintOptions &options)
+{
+    auto flag = [](bool on) { return on ? "1" : "0"; };
+    return std::string("SET_PRINT_PREFERENCES BED_LEVEL=") + flag(options.bed_level) + " FLOW_CALIBRATE=" +
+           flag(options.flow_calibrate) + " TIME_LAPSE_CAMERA=" + flag(options.time_lapse) + " FORCE=1";
+}
+
 std::vector<std::string> lane_object_names(const json &objects_list, const std::vector<std::string> &lane_names)
 {
     std::vector<std::string> out;
@@ -1106,8 +1113,8 @@ bool build_lane_edit_gcode(const Snapshot &snapshot, const std::string &lane_nam
     return true;
 }
 
-static bool check_tool_mapping(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
-                               std::string &error)
+bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
+                              std::vector<std::string> &gcode, std::string &error)
 {
     std::set<int>         tools;
     std::set<std::string> lanes;
@@ -1130,14 +1137,6 @@ static bool check_tool_mapping(const Snapshot &snapshot, const std::vector<std::
             return false;
         }
     }
-    return true;
-}
-
-bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
-                              std::vector<std::string> &gcode, std::string &error)
-{
-    if (!check_tool_mapping(snapshot, tool_to_lane, error))
-        return false;
 
     // Replay SET_MAP's swap semantics so lanes already in place are skipped.
     std::map<std::string, std::vector<std::string>> maps;
@@ -1169,19 +1168,6 @@ bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::p
         }
     }
     gcode.insert(gcode.end(), out.begin(), out.end());
-    return true;
-}
-
-bool file_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
-                             std::vector<std::string> &gcode, std::string &error)
-{
-    if (!check_tool_mapping(snapshot, tool_to_lane, error))
-        return false;
-    // AFC's maps when the file starts are unknown now, so nothing is skipped. Without
-    // multiple mapping each SET_MAP swaps with the T's old lane, which never holds a T
-    // placed earlier in this list, so every T ends on its lane.
-    for (const auto &[tool, lane] : tool_to_lane)
-        gcode.push_back("SET_MAP LANE=" + lane + " MAP=T" + std::to_string(tool));
     return true;
 }
 

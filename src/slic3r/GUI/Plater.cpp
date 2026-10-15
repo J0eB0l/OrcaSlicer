@@ -21832,23 +21832,24 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.storage     = dlg.storage();
 
 
-        // AFC: an upload without a print gets the lane screen too, and the slicer stores
-        // the file on the U1 itself. The lane picks go into the file, set with SET_MAP
-        // when it starts, because AFC's maps can change before then.
+        // AFC: an upload without a print gets the lane screen too, which sets AFC's maps
+        // now (they hold until a print ends). Its U1 switches go into the file, since the
+        // U1 clears them after every print, and the slicer stores the file on the U1.
         if (is_snapmaker_u1 && dlg.post_action() == PrintHostPostUploadAction::None) {
-            bool                                     shown = false;
-            std::vector<std::pair<int, std::string>> lanes;
-            if (!AFCPrintDialog::map_lanes_for_upload(this, shown, lanes))
+            bool                        shown = false;
+            AFCProtocol::U1PrintOptions u1_print;
+            if (!AFCPrintDialog::map_lanes_for_upload(this, shown, u1_print))
                 return;
             if (shown) {
                 std::string error;
-                if (!lanes.empty()) {
-                    const fs::path mapped = AFCPrintDialog::gcode_with_lane_map(upload_job.upload_data.source_path, lanes, error);
-                    if (mapped.empty()) {
+                if (u1_print.present) {
+                    const fs::path with_options = AFCPrintDialog::gcode_with_print_options(upload_job.upload_data.source_path,
+                                                                                           u1_print, error);
+                    if (with_options.empty()) {
                         show_error(this, error);
                         return;
                     }
-                    upload_job.upload_data.source_path = mapped;
+                    upload_job.upload_data.source_path = with_options;
                 }
                 switch (AFCPrintDialog::upload_u1_file(this, upload_job.upload_data.source_path, upload_job.upload_data.upload_path,
                                                        error)) {

@@ -143,6 +143,12 @@ void merge_afc_object(const nlohmann::json &status, Snapshot &out);
 /// "SET_PRINT_PREFERENCE KEY=bed_level VALUE=1\n...KEY=flow_calibrate...\n...KEY=time_lapse_camera...".
 std::string u1_print_options_gcode(const U1PrintOptions &options);
 
+/// The line a file uploaded to a U1 carries so it starts with these switches,
+/// however it is started later: "SET_PRINT_PREFERENCES BED_LEVEL=1
+/// FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=1 FORCE=1". The U1 refuses those
+/// preferences while a print runs unless FORCE=1 is given.
+std::string u1_file_print_options_gcode(const U1PrintOptions &options);
+
 /// Names of the per-lane Klipper objects in a `printer.objects.list` result
 /// ({"objects": [...]}) for the given lane names, e.g. "AFC_stepper lane1".
 std::vector<std::string> lane_object_names(const nlohmann::json &objects_list, const std::vector<std::string> &lane_names);
@@ -241,12 +247,6 @@ bool build_lane_edit_gcode(const Snapshot &snapshot, const std::string &lane, co
 /// multiple mapping enabled.
 bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
                               std::vector<std::string> &gcode, std::string &error);
-
-/// SET_MAP lines that put each T(tool) on the given lane whatever AFC maps when
-/// they run, for a file uploaded now and started later. Every pair gets its line
-/// (SET_MAP ignores a T already on its lane); checked like build_tool_mapping_gcode.
-bool file_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::pair<int, std::string>> &tool_to_lane,
-                             std::vector<std::string> &gcode, std::string &error);
 
 /// Copies the G-code file `src` to `dst` with `lines` inserted before its first
 /// command, after the slicer's comment header and thumbnails. False, with `error`

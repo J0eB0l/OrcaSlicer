@@ -127,7 +127,6 @@ bool AFCPrintDialog::run(bool snapmaker_sends, bool upload_only)
     m_proceed  = false;
     m_ended    = false;
     m_u1_print = {};
-    m_mapping.clear();
     s_active  = this;
     ShowModal();
     s_active = nullptr;
@@ -155,10 +154,10 @@ bool AFCPrintDialog::map_lanes_before_print(wxWindow *parent, bool snapmaker_sen
     return proceed;
 }
 
-bool AFCPrintDialog::map_lanes_for_upload(wxWindow *parent, bool &shown, std::vector<std::pair<int, std::string>> &mapping)
+bool AFCPrintDialog::map_lanes_for_upload(wxWindow *parent, bool &shown, AFCProtocol::U1PrintOptions &u1_print)
 {
-    shown = false;
-    mapping.clear();
+    shown    = false;
+    u1_print = {};
     const std::shared_ptr<PrintHost> host = AFCManager::afc_host();
     if (!host)
         return true;
@@ -173,22 +172,20 @@ bool AFCPrintDialog::map_lanes_for_upload(wxWindow *parent, bool &shown, std::ve
     AFCPrintDialog dialog(parent);
     const bool     proceed = dialog.run(false, true);
     if (proceed)
-        mapping = dialog.m_mapping;
+        u1_print = dialog.m_u1_print;
     return proceed;
 }
 
-boost::filesystem::path AFCPrintDialog::gcode_with_lane_map(const boost::filesystem::path                 &gcode,
-                                                            const std::vector<std::pair<int, std::string>> &mapping, std::string &error)
+boost::filesystem::path AFCPrintDialog::gcode_with_print_options(const boost::filesystem::path   &gcode,
+                                                                 const AFCProtocol::U1PrintOptions &u1_print, std::string &error)
 {
-    std::vector<std::string> lines;
-    if (!AFCProtocol::file_tool_mapping_gcode(AFCManager::instance().snapshot(), mapping, lines, error))
-        return {};
-    lines.insert(lines.begin(), "; AFC lanes picked in Snapmaker Orca when this file was uploaded");
+    const std::vector<std::string> lines = {"; U1 print options picked in Snapmaker Orca when this file was uploaded",
+                                            AFCProtocol::u1_file_print_options_gcode(u1_print)};
     boost::filesystem::path out = gcode;
     out.replace_extension(".afc" + gcode.extension().string());
     if (!AFCProtocol::write_gcode_with_prelude(u8_path(gcode), u8_path(out), lines, error))
         return {};
-    BOOST_LOG_TRIVIAL(warning) << "AFC print: lane map written into " << u8_path(out) << ": " << lines.size() - 1 << " SET_MAP lines";
+    BOOST_LOG_TRIVIAL(warning) << "AFC print: " << lines.back() << " written into " << u8_path(out);
     return out;
 }
 
@@ -406,14 +403,11 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_to_u1(wxWindow *parent, const boost:
     return job->result;
 }
 
-void AFCPrintDialog::finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print,
-                                   const std::vector<std::pair<int, std::string>> &mapping)
+void AFCPrintDialog::finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print)
 {
     if (s_active) {
-        if (proceed) {
+        if (proceed)
             s_active->m_u1_print = u1_print;
-            s_active->m_mapping  = mapping;
-        }
         s_active->end(proceed);
     }
 }
