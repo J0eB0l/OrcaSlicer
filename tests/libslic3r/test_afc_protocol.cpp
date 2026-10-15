@@ -658,3 +658,28 @@ TEST_CASE("the uploaded file's path is read from Moonraker's upload answer", "[A
     CHECK(AFCProtocol::uploaded_path(json::object()).empty());
     CHECK(AFCProtocol::uploaded_path(json("ok")).empty());
 }
+
+TEST_CASE("a cloud send starts the U1 like Snapmaker's popup does away from home", "[AFCProtocol]")
+{
+    AFCProtocol::U1PrintOptions options;
+    options.flow_calibrate = true;
+    const json params = AFCProtocol::u1_cloud_print_params("https://bucket.example/u/104734/plate_1.gcode?X-Amz-Signature=ab.cd",
+                                                           "q1w2e3==", 10154530, options, {{5, 0}});
+    const json expected = json::parse(R"({"type":"gcode","url":"https://bucket.example/u/104734/plate_1.gcode?X-Amz-Signature=ab.cd",
+        "auto_start":true,"checksum":"q1w2e3==","size":10154530,"print_plate":1,
+        "options":{"bed_level":0,"flow_calibrate":1,"time_lapse_camera":0,"map_table":[[5,0]]},
+        "extra_info":{"print_task_id":""}})");
+    CHECK(params == expected);
+    CHECK(AFCProtocol::u1_cloud_print_params("files/abc", "", 1, options, {})["type"] == "gcode");
+
+    const json devices = json::parse(R"([{"id":142150,"sn":"8110026032300163J1JS"},{"id":142155,"sn":"81100260304097190W6Q","name":"U1"}])");
+    CHECK(AFCProtocol::cloud_device_id(devices, "81100260304097190W6Q") == json(142155));
+    CHECK(AFCProtocol::cloud_device_id(devices, "nope").is_null());
+    CHECK(AFCProtocol::cloud_device_id(json::object(), "81100260304097190W6Q").is_null());
+
+    const json done = {{"url", "https://cdn.example/a.gcode"}, {"filePath", "u/104734/a.gcode"}};
+    CHECK(AFCProtocol::cloud_upload_location(done, false) == "https://cdn.example/a.gcode");
+    CHECK(AFCProtocol::cloud_upload_location(done, true) == "u/104734/a.gcode");
+    CHECK(AFCProtocol::cloud_upload_location(json{{"url", "https://cdn.example/a.gcode"}}, true) == "https://cdn.example/a.gcode");
+    CHECK(AFCProtocol::cloud_upload_location(json(), false).empty());
+}

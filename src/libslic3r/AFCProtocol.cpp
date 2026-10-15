@@ -1327,21 +1327,65 @@ bool u1_map_table(const Snapshot &snapshot, const std::vector<ProjectFilament> &
     return true;
 }
 
-json u1_local_print_params(const std::string &path, const U1PrintOptions &options,
-                           const std::vector<std::pair<int, int>> &map_table)
+namespace {
+
+json u1_print_options_json(const U1PrintOptions &options, const std::vector<std::pair<int, int>> &map_table)
 {
     json table = json::array();
     for (const auto &[tool, extruder] : map_table)
         table.push_back(json::array({tool, extruder}));
+    return json{{"bed_level", options.bed_level ? 1 : 0},
+                {"flow_calibrate", options.flow_calibrate ? 1 : 0},
+                {"time_lapse_camera", options.time_lapse ? 1 : 0},
+                {"map_table", table}};
+}
+
+} // namespace
+
+json u1_local_print_params(const std::string &path, const U1PrintOptions &options,
+                           const std::vector<std::pair<int, int>> &map_table)
+{
     return json{{"type", "gcode"},
                 {"path", path},
                 {"print_plate", 1},
-                {"options",
-                 {{"bed_level", options.bed_level ? 1 : 0},
-                  {"flow_calibrate", options.flow_calibrate ? 1 : 0},
-                  {"time_lapse_camera", options.time_lapse ? 1 : 0},
-                  {"map_table", table}}},
+                {"options", u1_print_options_json(options, map_table)},
                 {"extra_info", {{"print_task_id", ""}}}};
+}
+
+json u1_cloud_print_params(const std::string &url, const std::string &checksum, size_t size,
+                           const U1PrintOptions &options, const std::vector<std::pair<int, int>> &map_table)
+{
+    // Snapmaker's popup sends the file's extension as its type.
+    std::string name = url.substr(0, url.find_first_of("?#"));
+    name             = name.substr(name.find_last_of('/') + 1);
+    const size_t dot = name.find_last_of('.');
+    const std::string type = dot == std::string::npos || dot + 1 == name.size() ? "gcode" : name.substr(dot + 1);
+    return json{{"type", type},
+                {"url", url},
+                {"auto_start", true},
+                {"checksum", checksum},
+                {"size", size},
+                {"print_plate", 1},
+                {"options", u1_print_options_json(options, map_table)},
+                {"extra_info", {{"print_task_id", ""}}}};
+}
+
+json cloud_device_id(const json &devices, const std::string &sn)
+{
+    if (!devices.is_array() || sn.empty())
+        return nullptr;
+    for (const json &d : devices)
+        if (d.is_object() && str_field(d, "sn") == sn && d.contains("id") && !d["id"].is_null())
+            return d["id"];
+    return nullptr;
+}
+
+std::string cloud_upload_location(const json &completed, bool multipart)
+{
+    if (!completed.is_object())
+        return {};
+    const std::string url = str_field(completed, "url"), path = str_field(completed, "filePath");
+    return multipart ? (path.empty() ? url : path) : (url.empty() ? path : url);
 }
 
 std::string uploaded_path(const json &answer)

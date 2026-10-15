@@ -572,6 +572,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AFCWebBridge.hpp
     GUI/AFCPrintDialog.cpp
     GUI/AFCPrintDialog.hpp
+    GUI/AFCCloudUpload.cpp
+    GUI/AFCCloudUpload.hpp
     GUI/WebSocketDebugServer.cpp
     GUI/WebSocketDebugServer.hpp
     GUI/DownloadManager.cpp

@@ -1,5 +1,6 @@
 #include "AFCPrintDialog.hpp"
 
+#include "AFCCloudUpload.hpp"
 #include "AFCManager.hpp"
 #include "GUI_App.hpp"
 #include "HttpServer.hpp"
@@ -189,29 +190,47 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
     {
         std::atomic<int>  stage{0};
         std::atomic<int>  percent{0};
+        std::atomic<bool> cloud{false}; // uploading through Snapmaker's cloud, not the LAN
         std::atomic<bool> finished{false};
         U1Send            result{U1Send::NotSent};
         std::string       error;
     };
     auto job = std::make_shared<Job>();
 
+    // Away from the U1's network the upload goes through Snapmaker's cloud with the
+    // account the slicer is signed in to, as Snapmaker's popup does.
+    AFCCloudUpload::Account account;
+    const bool              signed_in = AFCCloudUpload::signed_in_account(account);
+    const std::string       serial    = host->get_sn();
+
     const std::string name   = u8_path(upload_path.filename());
     const std::string folder = u8_path(upload_path.parent_path());
-    std::thread([job, host, gcode, name, folder, u1_print, table]() {
+    std::thread([job, host, gcode, name, folder, u1_print, table, account, signed_in, serial]() {
         auto finish = [&job](U1Send result, const std::string &error) {
             job->result = result;
             job->error  = error;
             job->finished = true;
         };
         auto advance = [&job](int from, int to) { return job->stage.compare_exchange_strong(from, to); };
+        // Starts the uploaded file. A start the U1 may have taken is shown, never retried, so it cannot print twice.
+        auto start = [&](const std::string &method, const json &params, int timeout_ms) {
+            const json        res = call_and_wait(host, method, params, timeout_ms);
+            const std::string err = rpc_error(res);
+            if (err.empty())
+                return finish(U1Send::Sent, "");
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 answered " << method << " with " << res.dump();
+            if (err == "send failed" || method_missing(res))
+                return finish(U1Send::NotSent, "");
+            if (err == "timeout")
+                return finish(U1Send::Failed, "The printer did not confirm the print start. Check the printer before sending again.");
+            return finish(U1Send::Failed, "The printer refused the print: " + err);
+        };
 
         const json               info = call_and_wait(host, "machine.system_info", json::object(), 8000);
         const std::vector<std::string> addresses = info.is_object() && info.contains("data") ? AFCProtocol::lan_addresses(info["data"]) :
                                                                                          std::vector<std::string>();
-        if (addresses.empty()) {
-            BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 gave no LAN address (" << rpc_error(info) << "), leaving the send to Snapmaker's popup";
-            return finish(U1Send::NotSent, "");
-        }
+        if (addresses.empty())
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 gave no LAN address (" << rpc_error(info) << ")";
         if (!advance(0, 1))
             return finish(U1Send::Canceled, "");
 
@@ -251,25 +270,44 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
             if (http_status != 0)
                 break; // the U1 answered and refused it; another address will not change that
         }
-        if (stored.empty()) {
-            BOOST_LOG_TRIVIAL(warning) << "AFC print: upload to the U1 failed (" << failure << "), leaving the send to Snapmaker's popup";
+        if (!stored.empty()) {
+            if (!advance(1, 2))
+                return finish(U1Send::Canceled, "");
+            const json params = AFCProtocol::u1_local_print_params(stored, u1_print, table);
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: starting " << stored << " on the U1 with " << params["options"].dump();
+            return start("server.files.start_local_print", params, 20000);
+        }
+        if (!addresses.empty())
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: upload to the U1 failed (" << failure << ")";
+
+        if (!signed_in) {
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: no Snapmaker account signed in for a cloud upload, leaving the send to Snapmaker's popup";
+            return finish(U1Send::NotSent, "");
+        }
+        job->percent = 0;
+        job->cloud   = true;
+        AFCCloudUpload::Result uploaded;
+        std::string            cloud_error;
+        const bool             ok = AFCCloudUpload::upload(
+            account, gcode, name, serial,
+            [&job](size_t done, size_t total) {
+                if (total > 0)
+                    job->percent = int(done * 100 / total);
+                return job->stage.load() >= 0;
+            },
+            uploaded, cloud_error);
+        if (job->stage.load() < 0)
+            return finish(U1Send::Canceled, "");
+        if (!ok) {
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: cloud upload failed (" << cloud_error << "), leaving the send to Snapmaker's popup";
             return finish(U1Send::NotSent, "");
         }
         if (!advance(1, 2))
             return finish(U1Send::Canceled, "");
-
-        const json params = AFCProtocol::u1_local_print_params(stored, u1_print, table);
-        BOOST_LOG_TRIVIAL(warning) << "AFC print: starting " << stored << " on the U1 with " << params["options"].dump();
-        const json        res = call_and_wait(host, "server.files.start_local_print", params, 20000);
-        const std::string err = rpc_error(res);
-        if (err.empty())
-            return finish(U1Send::Sent, "");
-        BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 answered the start with " << res.dump();
-        if (err == "send failed" || method_missing(res))
-            return finish(U1Send::NotSent, "");
-        if (err == "timeout")
-            return finish(U1Send::Failed, "The printer did not confirm the print start. Check the printer before sending again.");
-        return finish(U1Send::Failed, "The printer refused the print: " + err);
+        const json params = AFCProtocol::u1_cloud_print_params(uploaded.url, uploaded.checksum, uploaded.size, u1_print, table);
+        BOOST_LOG_TRIVIAL(warning) << "AFC print: starting " << name << " on the U1 from the cloud with " << params["options"].dump();
+        // The U1 may fetch the file before it answers.
+        return start("server.files.start_cloud_print", params, 90000);
     }).detach();
 
     {
@@ -282,7 +320,8 @@ AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boo
             if (stage == 0)
                 go = dlg.Pulse(_L("Finding the printer on the network"));
             else if (stage == 1)
-                go = dlg.Update(std::min(99, job->percent.load()), _L("Uploading to the printer"));
+                go = dlg.Update(std::min(99, job->percent.load()),
+                                job->cloud ? _L("Uploading through Snapmaker's cloud") : _L("Uploading to the printer"));
             else if (stage == 2)
                 go = dlg.Pulse(_L("Starting the print"));
             if (!go && !canceling) {

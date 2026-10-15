@@ -295,6 +295,22 @@ nlohmann::json u1_local_print_params(const std::string &path, const U1PrintOptio
 /// The stored file's path from Moonraker's upload answer ("" when missing).
 std::string uploaded_path(const nlohmann::json &answer);
 
+// --- Sending through Snapmaker's cloud (away from the U1's network) ----------
+
+/// Params for the U1's server.files.start_cloud_print: the U1 downloads what
+/// Snapmaker's cloud holds at `url` and starts it, as Snapmaker's popup does.
+nlohmann::json u1_cloud_print_params(const std::string &url, const std::string &checksum, size_t size,
+                                     const U1PrintOptions &options, const std::vector<std::pair<int, int>> &map_table);
+
+/// The cloud id of the device with serial `sn` in /user/device/list's data,
+/// null when it is not there.
+nlohmann::json cloud_device_id(const nlohmann::json &devices, const std::string &sn);
+
+/// Where Snapmaker's cloud stored an upload, from /user/device/upload/completed's
+/// data. Snapmaker's popup reads filePath first after a multipart upload and url
+/// first after a single one.
+std::string cloud_upload_location(const nlohmann::json &completed, bool multipart);
+
 } // namespace AFCProtocol
 } // namespace Slic3r
 
