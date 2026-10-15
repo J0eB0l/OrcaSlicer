@@ -21775,8 +21775,14 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         std::string printer_model = printer_model_opt->value;
         is_snapmaker_u1           = boost::icontains(printer_model, "Snapmaker") && boost::icontains(printer_model, "U1");
     }
+    // AFC: a printer with a print host of its own (Klipper's Moonraker, OctoPrint) is sent to
+    // there. Snapmaker's print popup only reaches the printer its device page connected, so
+    // once a U1 had been connected no other printer could be sent to.
+    const auto *host_type = printer_config.option<ConfigOptionEnum<PrintHostType>>("host_type");
+    const bool  own_host  = !is_snapmaker_u1 && host_type != nullptr && host_type->value != htMoonRaker_mqtt &&
+                           printer_config.has("print_host") && !printer_config.opt_string("print_host").empty();
 
-    if (wxGetApp().app_config->get("use_new_connect") == "true" || is_snapmaker_u1) {
+    if ((wxGetApp().app_config->get("use_new_connect") == "true" && !own_host) || is_snapmaker_u1) {
         // firstly upload and open upload download dialog,
         // get default name       
         // Obtain default output path
