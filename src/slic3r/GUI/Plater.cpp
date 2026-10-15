@@ -21833,6 +21833,26 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         if (dlg.post_action() != PrintHostPostUploadAction::None && !AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print))
             return;
 
+        // The lane screen already holds the U1's switches, so it sends the print itself.
+        // Snapmaker's popup only takes over when nothing reached the printer (no LAN
+        // path to the U1, older firmware).
+        if (afc_u1_print.present && dlg.post_action() == PrintHostPostUploadAction::StartPrint) {
+            std::string error;
+            switch (AFCPrintDialog::send_u1_print(this, upload_job.upload_data.source_path, upload_job.upload_data.upload_path,
+                                                  afc_u1_print, error)) {
+            case AFCPrintDialog::U1Send::Sent:
+                get_notification_manager()->push_notification(NotificationType::CustomNotification,
+                                                              NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                                              _u8L("The print was sent to the printer."));
+                if (dlg.switch_to_device_tab())
+                    wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+                return;
+            case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
+            case AFCPrintDialog::U1Send::Canceled: return;
+            case AFCPrintDialog::U1Send::NotSent: break;
+            }
+        }
+
         WebPreprintDialog* dialog = new WebPreprintDialog();
         dialog->set_url_query(AFCPrintDialog::preprint_query(afc_u1_print));
         dialog->set_swtich_to_device(dlg.switch_to_device_tab());

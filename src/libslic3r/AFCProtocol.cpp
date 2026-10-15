@@ -1266,5 +1266,94 @@ std::vector<std::string> suggest_mapping(const Snapshot &snapshot, const std::ve
     return out;
 }
 
+std::vector<std::string> lan_addresses(const json &system_info)
+{
+    std::vector<std::string> out;
+    const json *info = &system_info;
+    if (auto it = system_info.find("system_info"); it != system_info.end() && it->is_object())
+        info = &*it;
+    auto net = info->find("network");
+    if (net == info->end() || !net->is_object())
+        return out;
+    // Wired before wireless before anything else, each in the order Moonraker lists them.
+    std::vector<std::pair<int, std::string>> found;
+    for (auto iface = net->begin(); iface != net->end(); ++iface) {
+        const std::string &name = iface.key();
+        const int rank = name.compare(0, 3, "eth") == 0 || name.compare(0, 2, "en") == 0 ? 0 :
+                         name.compare(0, 4, "wlan") == 0 || name.compare(0, 2, "wl") == 0 ? 1 : 2;
+        if (!iface->is_object())
+            continue;
+        auto addrs = iface->find("ip_addresses");
+        if (addrs == iface->end() || !addrs->is_array())
+            continue;
+        for (const json &a : *addrs) {
+            if (!a.is_object() || str_field(a, "family") != "ipv4")
+                continue;
+            const std::string addr = str_field(a, "address");
+            if (addr.empty() || addr.compare(0, 4, "127.") == 0 || addr.compare(0, 8, "169.254.") == 0)
+                continue;
+            if (std::none_of(found.begin(), found.end(), [&](const auto &f) { return f.second == addr; }))
+                found.emplace_back(rank, addr);
+        }
+    }
+    std::stable_sort(found.begin(), found.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    for (auto &f : found)
+        out.push_back(std::move(f.second));
+    return out;
+}
+
+bool u1_map_table(const Snapshot &snapshot, const std::vector<ProjectFilament> &filaments,
+                  std::vector<std::pair<int, int>> &table, std::string &error)
+{
+    table.clear();
+    for (const ProjectFilament &f : filaments) {
+        if (!f.used)
+            continue;
+        const Lane *lane = snapshot.lane_for_tool(f.id);
+        if (lane == nullptr) {
+            error = "No AFC lane is mapped to T" + std::to_string(f.id);
+            return false;
+        }
+        if (lane->extruder_index < 0) {
+            error = "AFC lane " + lane->name + " (T" + std::to_string(f.id) + ") has no toolhead";
+            return false;
+        }
+        table.emplace_back(f.id, lane->extruder_index);
+    }
+    if (table.empty()) {
+        error = "The plate uses no filament";
+        return false;
+    }
+    return true;
+}
+
+json u1_local_print_params(const std::string &path, const U1PrintOptions &options,
+                           const std::vector<std::pair<int, int>> &map_table)
+{
+    json table = json::array();
+    for (const auto &[tool, extruder] : map_table)
+        table.push_back(json::array({tool, extruder}));
+    return json{{"type", "gcode"},
+                {"path", path},
+                {"print_plate", 1},
+                {"options",
+                 {{"bed_level", options.bed_level ? 1 : 0},
+                  {"flow_calibrate", options.flow_calibrate ? 1 : 0},
+                  {"time_lapse_camera", options.time_lapse ? 1 : 0},
+                  {"map_table", table}}},
+                {"extra_info", {{"print_task_id", ""}}}};
+}
+
+std::string uploaded_path(const json &answer)
+{
+    const json *a = &answer;
+    if (auto it = answer.find("result"); it != answer.end() && it->is_object())
+        a = &*it;
+    auto item = a->find("item");
+    if (item == a->end() || !item->is_object())
+        return {};
+    return str_field(*item, "path");
+}
+
 } // namespace AFCProtocol
 } // namespace Slic3r

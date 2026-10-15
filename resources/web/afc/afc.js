@@ -597,7 +597,7 @@
       '<div class="footer"><span class="hint">Applying sets each T number to its lane with SET_MAP.</span><div class="grow"></div>' +
       '<button class="btn" id="cancel">Cancel</button>' +
       '<button class="btn" id="skip" title="Print with the T map AFC has now">Keep current map</button>' +
-      '<button class="btn primary" id="apply"' + (blocking ? ' disabled' : '') + '>Apply and continue</button></div>';
+      '<button class="btn primary" id="apply"' + (blocking ? ' disabled' : '') + '>' + (SNAPMAKER_SENDS && u1Print ? 'Apply and print' : 'Apply and continue') + '</button></div>';
 
     document.getElementById('auto').onclick = () => { resetMapping(); render(); };
     document.getElementById('refresh').onclick = () => load(true);
@@ -680,8 +680,9 @@
         (u1Print[key] ? ' checked' : '') + '><span>' + esc(label) + '</span></label>').join('') + '</div>';
   }
 
-  // With Snapmaker's popup next, it sends the switches itself (opening with these picked).
-  // Otherwise the printer gets them now, as its popup would set them.
+  // On the U1 path the switches go with the print itself (or open Snapmaker's popup
+  // with them picked when the slicer cannot reach the U1 directly). Otherwise the
+  // printer gets them now, as its popup would set them.
   async function setPrintOptions() {
     if (!u1Print || SNAPMAKER_SENDS || u1SetFailed) return true;
     const now = (state && state.afc && state.afc.u1_print) || {};

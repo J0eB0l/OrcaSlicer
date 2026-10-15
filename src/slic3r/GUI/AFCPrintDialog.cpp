@@ -5,13 +5,83 @@
 #include "HttpServer.hpp"
 #include "I18N.hpp"
 #include "SSWCP.hpp"
+#include "Widgets/ProgressDialog.hpp"
 #include "Widgets/WebView.hpp"
+#include "slic3r/Utils/Http.hpp"
+#include "slic3r/Utils/PrintHost.hpp"
+
+#include <boost/algorithm/string/case_conv.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/nowide/convert.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <wx/sizer.h>
 #include <wx/utils.h>
 
 namespace Slic3r {
 namespace GUI {
+
+namespace {
+
+using json = nlohmann::json;
+
+// One JSON-RPC call over the U1's link, waited for here. Moonraker_Mqtt answers
+// on a thread of its own, never this one.
+json call_and_wait(const std::shared_ptr<PrintHost> &host, const std::string &method, const json &params, int timeout_ms)
+{
+    struct Wait
+    {
+        std::mutex              mtx;
+        std::condition_variable cv;
+        bool                    done{false};
+        json                    res;
+    };
+    auto wait = std::make_shared<Wait>();
+    host->async_jsonrpc_call(method, params, [wait](const json &res) {
+        std::lock_guard<std::mutex> lock(wait->mtx);
+        wait->res  = res;
+        wait->done = true;
+        wait->cv.notify_all();
+    });
+    std::unique_lock<std::mutex> lock(wait->mtx);
+    if (!wait->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&wait] { return wait->done; }))
+        return json{{"error", "timeout"}};
+    return wait->res;
+}
+
+// The error of a JSON-RPC answer as text, "" when it has none.
+std::string rpc_error(const json &res)
+{
+    if (res.is_null())
+        return "send failed";
+    if (!res.is_object() || !res.contains("error"))
+        return {};
+    const json &err = res["error"];
+    if (err.is_string())
+        return err.get<std::string>();
+    if (err.is_object() && err.contains("message") && err["message"].is_string())
+        return err["message"].get<std::string>();
+    return err.dump();
+}
+
+bool method_missing(const json &res)
+{
+    if (!res.is_object() || !res.contains("error"))
+        return false;
+    const json &err = res["error"];
+    if (err.is_object() && err.contains("code") && err["code"].is_number_integer() && err["code"].get<int>() == -32601)
+        return true;
+    return boost::algorithm::to_lower_copy(rpc_error(res)).find("method not found") != std::string::npos;
+}
+
+std::string u8_path(const boost::filesystem::path &path) { return boost::nowide::narrow(path.generic_wstring()); }
+
+} // namespace
 
 AFCPrintDialog *AFCPrintDialog::s_active = nullptr;
 
@@ -89,6 +159,145 @@ std::string AFCPrintDialog::preprint_query(const AFCProtocol::U1PrintOptions &u1
     auto flag = [](bool on) { return on ? "1" : "0"; };
     return std::string("&afc_bed_level=") + flag(u1_print.bed_level) + "&afc_flow_calibrate=" + flag(u1_print.flow_calibrate) +
            "&afc_time_lapse_camera=" + flag(u1_print.time_lapse);
+}
+
+AFCPrintDialog::U1Send AFCPrintDialog::send_u1_print(wxWindow *parent, const boost::filesystem::path &gcode,
+                                                     const boost::filesystem::path &upload_path,
+                                                     const AFCProtocol::U1PrintOptions &u1_print, std::string &error)
+{
+    error.clear();
+    const std::shared_ptr<PrintHost> host = AFCManager::device_host();
+    if (!host)
+        return U1Send::NotSent;
+
+    // The map table comes from AFC as the lane screen just left it.
+    std::vector<std::pair<int, int>> table;
+    {
+        wxBusyCursor busy;
+        AFCManager &afc = AFCManager::instance();
+        if (!afc.refresh_blocking(host, 4000) || !AFCProtocol::u1_map_table(afc.snapshot(), afc.project_filaments(), table, error)) {
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: not sending straight to the U1: " << (error.empty() ? "AFC did not answer" : error);
+            error.clear();
+            return U1Send::NotSent;
+        }
+    }
+
+    // stage: 0 finding the U1 on the LAN, 1 uploading, 2 starting; -1 canceled.
+    // The worker moves 0 -> 1 -> 2 and the dialog 0/1 -> -1, each only from the
+    // stage it saw, so a cancel either lands before the start goes out or not at all.
+    struct Job
+    {
+        std::atomic<int>  stage{0};
+        std::atomic<int>  percent{0};
+        std::atomic<bool> finished{false};
+        U1Send            result{U1Send::NotSent};
+        std::string       error;
+    };
+    auto job = std::make_shared<Job>();
+
+    const std::string name   = u8_path(upload_path.filename());
+    const std::string folder = u8_path(upload_path.parent_path());
+    std::thread([job, host, gcode, name, folder, u1_print, table]() {
+        auto finish = [&job](U1Send result, const std::string &error) {
+            job->result = result;
+            job->error  = error;
+            job->finished = true;
+        };
+        auto advance = [&job](int from, int to) { return job->stage.compare_exchange_strong(from, to); };
+
+        const json               info = call_and_wait(host, "machine.system_info", json::object(), 8000);
+        const std::vector<std::string> addresses = info.is_object() && info.contains("data") ? AFCProtocol::lan_addresses(info["data"]) :
+                                                                                         std::vector<std::string>();
+        if (addresses.empty()) {
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 gave no LAN address (" << rpc_error(info) << "), leaving the send to Snapmaker's popup";
+            return finish(U1Send::NotSent, "");
+        }
+        if (!advance(0, 1))
+            return finish(U1Send::Canceled, "");
+
+        std::string stored, failure;
+        for (const std::string &address : addresses) {
+            bool        done = false;
+            unsigned    http_status = 0;
+            std::string answer;
+            const std::string url = "http://" + address + "/server/files/upload";
+            auto http = Http::post(url);
+            http.timeout_connect(5);
+            if (!folder.empty())
+                http.form_add("path", folder);
+            http.form_add_file("file", gcode, name)
+                .on_complete([&](std::string body, unsigned) {
+                    done   = true;
+                    answer = std::move(body);
+                })
+                .on_error([&](std::string body, std::string err, unsigned status) {
+                    http_status = status;
+                    failure     = url + ": " + (err.empty() ? "HTTP " + std::to_string(status) : err) + (body.empty() ? "" : " " + body);
+                })
+                .on_progress([&](Http::Progress progress, bool &cancel) {
+                    if (progress.ultotal > 0)
+                        job->percent = int(progress.ulnow * 100 / progress.ultotal);
+                    cancel = job->stage.load() < 0;
+                })
+                .perform_sync();
+            if (job->stage.load() < 0)
+                return finish(U1Send::Canceled, "");
+            if (done) {
+                stored = AFCProtocol::uploaded_path(json::parse(answer, nullptr, false));
+                if (stored.empty())
+                    stored = folder.empty() ? name : folder + "/" + name;
+                break;
+            }
+            if (http_status != 0)
+                break; // the U1 answered and refused it; another address will not change that
+        }
+        if (stored.empty()) {
+            BOOST_LOG_TRIVIAL(warning) << "AFC print: upload to the U1 failed (" << failure << "), leaving the send to Snapmaker's popup";
+            return finish(U1Send::NotSent, "");
+        }
+        if (!advance(1, 2))
+            return finish(U1Send::Canceled, "");
+
+        const json params = AFCProtocol::u1_local_print_params(stored, u1_print, table);
+        BOOST_LOG_TRIVIAL(warning) << "AFC print: starting " << stored << " on the U1 with " << params["options"].dump();
+        const json        res = call_and_wait(host, "server.files.start_local_print", params, 20000);
+        const std::string err = rpc_error(res);
+        if (err.empty())
+            return finish(U1Send::Sent, "");
+        BOOST_LOG_TRIVIAL(warning) << "AFC print: the U1 answered the start with " << res.dump();
+        if (err == "send failed" || method_missing(res))
+            return finish(U1Send::NotSent, "");
+        if (err == "timeout")
+            return finish(U1Send::Failed, "The printer did not confirm the print start. Check the printer before sending again.");
+        return finish(U1Send::Failed, "The printer refused the print: " + err);
+    }).detach();
+
+    {
+        ProgressDialog dlg(_L("Send to printer"), _L("Finding the printer on the network"), 100, parent,
+                           wxPD_APP_MODAL | wxPD_AUTO_HIDE | wxPD_CAN_ABORT);
+        bool canceling = false;
+        while (!job->finished) {
+            const int stage = job->stage.load();
+            bool      go    = true;
+            if (stage == 0)
+                go = dlg.Pulse(_L("Finding the printer on the network"));
+            else if (stage == 1)
+                go = dlg.Update(std::min(99, job->percent.load()), _L("Uploading to the printer"));
+            else if (stage == 2)
+                go = dlg.Pulse(_L("Starting the print"));
+            if (!go && !canceling) {
+                canceling = true;
+                // Too late once the start went out: then its answer still decides.
+                int seen = job->stage.load();
+                while (seen >= 0 && seen < 2)
+                    if (job->stage.compare_exchange_weak(seen, -1))
+                        return U1Send::Canceled;
+            }
+            wxMilliSleep(100);
+        }
+    }
+    error = job->error;
+    return job->result;
 }
 
 void AFCPrintDialog::finish_active(bool proceed, const AFCProtocol::U1PrintOptions &u1_print)

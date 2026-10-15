@@ -601,3 +601,60 @@ TEST_CASE("a spool's preset may carry its filament name without the vendor", "[A
     l.vendor = "";
     CHECK(AFCProtocol::spool_preset_aliases(l).empty());
 }
+
+TEST_CASE("the U1's LAN addresses come from system_info, wired first", "[AFCProtocol]")
+{
+    const json info = {{"system_info",
+                        {{"network",
+                          {{"wlan0",
+                            {{"ip_addresses",
+                              {{{"family", "ipv6"}, {"address", "fe80::1"}},
+                               {{"family", "ipv4"}, {"address", "192.168.4.36"}}}}}},
+                           {"lo", {{"ip_addresses", {{{"family", "ipv4"}, {"address", "127.0.0.1"}}}}}},
+                           {"eth0",
+                            {{"ip_addresses",
+                              {{{"family", "ipv4"}, {"address", "169.254.3.4"}},
+                               {{"family", "ipv4"}, {"address", "10.0.0.5"}}}}}}}}}}};
+    CHECK(AFCProtocol::lan_addresses(info) == std::vector<std::string>{"10.0.0.5", "192.168.4.36"});
+    CHECK(AFCProtocol::lan_addresses(info["system_info"]) == std::vector<std::string>{"10.0.0.5", "192.168.4.36"});
+    CHECK(AFCProtocol::lan_addresses(json::object()).empty());
+    CHECK(AFCProtocol::lan_addresses(json()).empty());
+    CHECK(AFCProtocol::lan_addresses(json{{"network", {{"wlan0", "down"}}}}).empty());
+}
+
+TEST_CASE("the U1 map table pairs each used T(n) with its lane's toolhead", "[AFCProtocol]")
+{
+    AFCProtocol::Snapshot s;
+    REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));
+    std::vector<AFCProtocol::ProjectFilament> f(3);
+    f[0] = {0, "#FF0000", "PLA", 10, true};  // lane1 on extruder
+    f[1] = {1, "#00FF00", "PETG", 0, false}; // not on this plate
+    f[2] = {4, "#0000FF", "PLA", 10, true};  // lane5 on extruder1
+
+    std::vector<std::pair<int, int>> table;
+    std::string                      error;
+    REQUIRE(AFCProtocol::u1_map_table(s, f, table, error));
+    CHECK(table == std::vector<std::pair<int, int>>{{0, 0}, {4, 1}});
+
+    f.push_back({7, "#FFFFFF", "PLA", 10, true}); // nothing maps T7
+    CHECK_FALSE(AFCProtocol::u1_map_table(s, f, table, error));
+    CHECK(error == "No AFC lane is mapped to T7");
+
+    AFCProtocol::U1PrintOptions options;
+    options.bed_level  = true;
+    options.time_lapse = true;
+    const json params  = AFCProtocol::u1_local_print_params("plate_1.gcode", options, {{5, 0}, {1, 2}});
+    const json expected = json::parse(R"({"type":"gcode","path":"plate_1.gcode","print_plate":1,
+        "options":{"bed_level":1,"flow_calibrate":0,"time_lapse_camera":1,"map_table":[[5,0],[1,2]]},
+        "extra_info":{"print_task_id":""}})");
+    CHECK(params == expected);
+}
+
+TEST_CASE("the uploaded file's path is read from Moonraker's upload answer", "[AFCProtocol]")
+{
+    const json answer = {{"item", {{"path", "sub/plate_1.gcode"}, {"root", "gcodes"}}}, {"action", "create_file"}};
+    CHECK(AFCProtocol::uploaded_path(answer) == "sub/plate_1.gcode");
+    CHECK(AFCProtocol::uploaded_path(json{{"result", answer}}) == "sub/plate_1.gcode");
+    CHECK(AFCProtocol::uploaded_path(json::object()).empty());
+    CHECK(AFCProtocol::uploaded_path(json("ok")).empty());
+}

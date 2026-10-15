@@ -274,6 +274,27 @@ std::vector<std::string> suggest_mapping(const Snapshot &snapshot, const std::ve
 /// Simple sRGB Euclidean distance, used when no better metric is available.
 double rgb_distance(const std::string &a, const std::string &b);
 
+// --- Sending a print straight to the U1 -------------------------------------
+
+/// The printer's LAN IPv4 addresses from Moonraker's machine.system_info
+/// answer (with or without its "system_info" wrapper), wired interfaces
+/// first. Loopback and link-local addresses are left out.
+std::vector<std::string> lan_addresses(const nlohmann::json &system_info);
+
+/// The U1's map_table for this print: every used filament's T(n) paired with
+/// the toolhead of the lane AFC maps to it. False, with `error` set, when a
+/// used filament has no lane or its lane has no toolhead.
+bool u1_map_table(const Snapshot &snapshot, const std::vector<ProjectFilament> &filaments,
+                  std::vector<std::pair<int, int>> &table, std::string &error);
+
+/// Params for the U1's server.files.start_local_print, as Snapmaker's own
+/// print popup sends them on firmware 1.3.0 and later.
+nlohmann::json u1_local_print_params(const std::string &path, const U1PrintOptions &options,
+                                     const std::vector<std::pair<int, int>> &map_table);
+
+/// The stored file's path from Moonraker's upload answer ("" when missing).
+std::string uploaded_path(const nlohmann::json &answer);
+
 } // namespace AFCProtocol
 } // namespace Slic3r
 
