@@ -519,13 +519,12 @@
       editorDirty = false;
     };
 
-    const action = (name, question) => async () => {
-      if (!confirm(question)) return;
+    const action = (name) => async () => {
       await run(() => call('sw_AFC_LaneAction', { lane: l.name, action: name }), 'Sent to AFC');
     };
-    $('act-load').onclick = action('load', 'Load ' + l.name + ' into ' + headName(l.extruder_index) + '? AFC unloads whatever is in that toolhead first.');
-    $('act-unload').onclick = action('unload', 'Unload ' + l.name + ' from its toolhead?');
-    $('act-eject').onclick = action('eject', 'Eject ' + l.name + ' out of the unit?');
+    $('act-load').onclick = action('load');
+    $('act-unload').onclick = action('unload');
+    $('act-eject').onclick = action('eject');
   }
 
   async function run(fn, okText) {
