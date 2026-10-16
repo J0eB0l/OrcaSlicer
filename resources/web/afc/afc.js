@@ -71,13 +71,21 @@
     return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  const ICONS = window.AFC_ICONS || {};
+  function icon(name, cls) {
+    const d = ICONS[name];
+    return d ? '<svg class="ic' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true"><path d="' + d + '"/></svg>' : '';
+  }
+
   let toastTimer = null;
   function toast(text, bad) {
     $toast.textContent = text;
     $toast.className = 'toast show' + (bad ? ' bad' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { $toast.className = 'toast'; }, bad ? 5000 : 2600);
+    // An error stays long enough to read, and a click puts it away.
+    toastTimer = setTimeout(() => { $toast.className = 'toast'; }, bad ? 12000 : 2600);
   }
+  $toast.addEventListener('click', () => { clearTimeout(toastTimer); $toast.className = 'toast'; });
 
   function hexOk(c) { return /^#[0-9A-Fa-f]{6}$/.test(c || ''); }
 
@@ -91,9 +99,70 @@
     return c ? 'background:' + c : '';
   }
 
-  function spool(lane, small) {
+  function spool(lane, size) {
     const has = lane && lane.has_filament && (hexOk(lane.color) || (lane.multi_colors || []).length);
-    return '<span class="spool' + (small ? ' sm' : '') + (has ? '' : ' none') + '" style="' + (has ? spoolStyle(lane) : '') + '"></span>';
+    const cls = size === true ? ' sm' : size ? ' ' + size : '';
+    return '<span class="spool' + cls + (has ? '' : ' none') + '" style="' + (has ? spoolStyle(lane) : '') + '"></span>';
+  }
+
+  // Share of the spool left, 0-100, or -1 when AFC has no weight for it.
+  function remaining(lane) {
+    if (!lane || !lane.has_filament || !(lane.weight > 0)) return -1;
+    const initial = lane.initial_weight > 0 ? lane.initial_weight : 1000;
+    return Math.max(0, Math.min(100, (lane.weight / initial) * 100));
+  }
+
+  // A lane's spool, seen from the front and a little to the side, wound with what is left on it (all of it when AFC
+  // has no weight). The filament keeps its share of the spool's volume, so half the weight is not half the depth.
+  let reelSeq = 0;
+  function reel(lane) {
+    const K = 0.46, CY = 28, R = 24, XF = 16, XB = 34, T = 2.2, CORE = 11.5, FULL = 22.5, HOLE = 6;
+    const id = 'reel' + (++reelSeq);
+    const n = (v) => +v.toFixed(2);
+    const ell = (x, ry, attrs) => '<ellipse cx="' + x + '" cy="' + CY + '" rx="' + n(ry * K) + '" ry="' + n(ry) + '" ' + attrs + '/>';
+    const barrel = (ry, attrs) => '<path d="M' + XF + ' ' + n(CY - ry) + 'H' + XB + 'A' + n(ry * K) + ' ' + n(ry) + ' 0 0 1 ' + XB + ' ' +
+      n(CY + ry) + 'H' + XF + 'Z" ' + attrs + '/>';
+    const loaded = !!(lane && lane.has_filament);
+    const pct = remaining(lane);
+    const ry = loaded ? Math.sqrt(CORE * CORE + (pct < 0 ? 1 : pct / 100) * (FULL * FULL - CORE * CORE)) : 0;
+    const colors = loaded ? ((lane.multi_colors || []).length > 1 ? lane.multi_colors.filter(hexOk) : [lane.color].filter(hexOk)) : [];
+    let defs = '<linearGradient id="' + id + 's" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="#fff" stop-opacity=".34"/><stop offset=".32" stop-color="#fff" stop-opacity=".04"/>' +
+      '<stop offset=".62" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".38"/></linearGradient>' +
+      '<linearGradient id="' + id + 'g" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#fff" stop-opacity=".30"/><stop offset=".55" stop-color="#fff" stop-opacity="0"/></linearGradient>' +
+      '<pattern id="' + id + 'w" width="1.7" height="4" patternUnits="userSpaceOnUse"><rect width=".5" height="4" fill="#000" fill-opacity=".13"/></pattern>';
+    // Without a color AFC knows, the filament is hatched rather than painted a gray that could be real.
+    let fill = colors[0] || 'url(#' + id + 'u)';
+    if (!colors.length) {
+      defs += '<pattern id="' + id + 'u" width="2.6" height="2.6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">' +
+        '<rect width="2.6" height="2.6" class="sp-unknown"/><rect width="1.3" height="2.6" fill="#fff" fill-opacity=".3"/></pattern>';
+    } else if (colors.length > 1) {
+      const band = 100 / colors.length;
+      defs += '<linearGradient id="' + id + 'm" x1="' + XF + '" x2="' + (XF + 2.4 * colors.length) + '" gradientUnits="userSpaceOnUse" spreadMethod="repeat">' +
+        colors.map((c, i) => '<stop offset="' + n(i * band) + '%" stop-color="' + c + '"/><stop offset="' + n((i + 1) * band) + '%" stop-color="' + c + '"/>').join('') +
+        '</linearGradient>';
+      fill = 'url(#' + id + 'm)';
+    }
+    const paint = 'fill="' + fill + '"';
+    let svg = ell(XB + T, R, 'class="sp-rim"') + ell(XB, R, 'class="sp-back"') + barrel(CORE, 'class="sp-core"') +
+      barrel(CORE, 'fill="url(#' + id + 's)"');
+    if (loaded) svg += barrel(ry, paint) + barrel(ry, 'fill="url(#' + id + 'w)"') + barrel(ry, 'fill="url(#' + id + 's)"');
+    svg += ell(XF + T, R, 'class="sp-rim"') + ell(XF, R, 'class="sp-face"');
+    if (loaded) {
+      svg += ell(XF, ry, paint) + ell(XF, ry, 'fill="#000" fill-opacity=".14"');
+      for (let r = CORE + 2.2; r < ry - 0.8; r += 2.2) svg += ell(XF, r, 'class="sp-ring"');
+    }
+    svg += ell(XF, CORE, 'class="sp-hub"') + ell(XF, HOLE, 'class="sp-hole"') + ell(XF, R, 'fill="url(#' + id + 'g)" class="sp-edge"');
+    const what = !loaded ? 'Empty' : (colors.length ? '' : 'No color in AFC · ') + (pct < 0 ? 'no weight' : Math.round(pct) + '% left');
+    return '<svg class="reel' + (loaded ? '' : ' none') + '" viewBox="0 0 56 56" role="img" aria-label="' + esc(what) + '"><title>' + esc(what) +
+      '</title><defs>' + defs + '</defs>' + svg + '</svg>';
+  }
+
+  // The filament's color, to tint its lane card faintly.
+  function tint(lane) {
+    const c = lane && lane.has_filament ? rgb(lane.color) : null;
+    return c ? '--fil: ' + c.join(',') : '';
   }
 
   function swatch(color, small) {
@@ -115,16 +184,25 @@
     return name || (idx >= 0 ? 'extruder' + (idx || '') : 'toolhead');
   }
 
-  const UNIT_ICONS = [
-    // OpenAMS before the Bambu rule: its name contains "AMS" too.
-    [/openams|oams/i, 'OA'], [/bambu|ams/i, 'AMS'], [/box.?turtle/i, 'BT'], [/night.?owl/i, 'NO'],
-    [/ace/i, 'ACE'], [/htlf/i, 'HT'], [/quattro/i, 'QB'], [/emu/i, 'EMU'], [/vivid/i, 'VV'], [/claymore/i, 'CM'],
-  ];
-  function unitIcon(type, name) {
-    const s = (type || '') + ' ' + (name || '');
-    for (const [re, label] of UNIT_ICONS) if (re.test(s)) return label;
-    return (name || '?').slice(0, 2).toUpperCase();
+  // The unit's icon, picked the way Fluidd picks it: by AFC unit type, and for a
+  // Bambu unit by the model its dryer reports. Other units show the AFC logo.
+  function unitIconName(unit) {
+    const type = String(unit.type || '').toLowerCase().replace(/[_\s-]/g, '');
+    const model = String((unit.dryer && unit.dryer.model) || '').toLowerCase();
+    // OpenAMS before the Bambu rule: its type contains "ams" too.
+    if (/openams|oams/.test(type)) return 'openams';
+    if (/bambu|^ams/.test(type)) {
+      if (model === 'ht' || (!model && /(?:^|_)ht(?:_|$)/i.test(unit.name || ''))) return 'amsht';
+      return model === 'ams2' ? 'ams2' : 'ams';
+    }
+    if (/^ace/.test(type)) return /2/.test(type + model) ? 'ace2' : 'ace';
+    if (/boxturtle/.test(type)) return 'boxturtle';
+    if (/nightowl/.test(type)) return 'nightowl';
+    if (/htlf/.test(type)) return 'htlf';
+    if (/quattro/.test(type)) return 'quattrobox';
+    return 'afc';
   }
+  function unitIcon(unit) { return '<span class="unit-icon" title="' + esc(prettyType(unit.type)) + '">' + icon(unitIconName(unit)) + '</span>'; }
   function prettyType(type) { return (type || 'Unit').replace(/_/g, ' '); }
 
   function materialKey(m) {
@@ -164,6 +242,7 @@
   let u1SetFailed = false;   // print view: the printer refused them once; the next try prints without
   let dryUnit = null;        // panel: unit name with the dry popup open
   let dryForm = null;        // panel: what the dry popup holds {material, temp, hours, rotate}
+  let dryStarting = null;    // panel: {unit, temp, until} from a start until the unit reports drying
 
   function lanes() { return (state && state.afc && state.afc.lanes) || []; }
   // Units with lanes; AFC also lists a toolchanger entry and unclaimed BridgeBox spares.
@@ -205,7 +284,7 @@
   }
 
   function renderError(message) {
-    $app.innerHTML = '<div class="empty-state"><div class="big">Could not read AFC</div>' + esc(message) +
+    $app.innerHTML = '<div class="empty-state"><div class="logo">' + icon('afc') + '</div><div class="big">Could not read AFC</div>' + esc(message) +
       '<div style="margin-top:14px"><button class="btn" id="retry">Try again</button></div></div>';
     document.getElementById('retry').onclick = () => load(true);
   }
@@ -214,26 +293,28 @@
   function renderPanel() {
     const afc = state && state.afc;
     if (!state || !state.connected) {
-      $app.innerHTML = bar('', '') + '<div class="empty-state"><div class="big">No printer connected</div>Connect your printer on the device page to see its AFC units.</div>';
+      $app.innerHTML = bar('', '') + '<div class="empty-state"><div class="logo">' + icon('afc') + '</div><div class="big">No printer connected</div>Connect your printer on the device page to see its AFC units.</div>';
       bindBar();
       return;
     }
     if (!afc || !afc.present || !afc.lanes.length) {
-      $app.innerHTML = bar('', '') + '<div class="empty-state"><div class="big">No AFC on this printer</div>When AFC is installed, its units and lanes show up here.</div>';
+      $app.innerHTML = bar('', '') + '<div class="empty-state"><div class="logo">' + icon('afc') + '</div><div class="big">No AFC on this printer</div>When AFC is installed, its units and lanes show up here.</div>';
       bindBar();
       return;
     }
 
     const loadedCount = afc.lanes.filter((l) => l.has_filament).length;
     const units = laneUnits();
-    const sub = 'AFC ' + esc(afc.version || '') + ' · ' + units.length + ' unit' + (units.length === 1 ? '' : 's') +
-      ' · ' + loadedCount + '/' + afc.lanes.length + ' lanes loaded';
+    const stats = '<div class="stats"><span class="stat"><b>' + units.length + '</b>unit' + (units.length === 1 ? '' : 's') + '</span>' +
+      '<span class="stat"><b>' + loadedCount + '</b>of ' + afc.lanes.length + ' lanes loaded</span></div>';
 
-    let html = bar(sub, '<button class="btn" id="sync" title="Use the AFC lanes as the project filaments">Sync to slicer</button>');
-    html += '<div class="scroll" id="scroll">' + headsStrip(afc);
+    let html = bar('AFC ' + esc(afc.version || '') + (afc.spoolman ? ' · Spoolman' : ''),
+      stats + '<button class="btn" id="sync" title="Use the AFC lanes as the project filaments">Sync to slicer</button>');
+    html += '<div class="main"><div class="scroll" id="scroll">' + headsStrip(afc);
     for (const unit of units) html += unitCard(unit);
     html += '</div>';
     if (selected && laneByName(selected)) html += editor(laneByName(selected));
+    html += '</div>';
     const dryOpen = dryUnit && unitByName(dryUnit) && unitByName(dryUnit).dryer;
     if (dryOpen) html += dryPopup(unitByName(dryUnit));
     $app.innerHTML = html;
@@ -251,10 +332,13 @@
   }
 
   function bar(sub, extra) {
-    return '<div class="bar"><div><h1>AFC lanes</h1>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>' +
-      '<div class="grow"></div>' + extra +
-      '<button class="btn icon ghost" id="refresh" title="Read AFC again">⟳</button>' +
-      (VIEW === 'panel' ? '<button class="btn icon ghost" id="hide" title="Hide the AFC panel">✕</button>' : '') + '</div>';
+    return '<div class="bar"><span class="logo">' + icon('afc') + '</span><div><h1>AFC lanes</h1>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>' +
+      '<div class="grow"></div>' + extra + refreshButton() +
+      (VIEW === 'panel' ? '<button class="btn icon ghost" id="hide" title="Hide the AFC panel">' + icon('close') + '</button>' : '') + '</div>';
+  }
+
+  function refreshButton() {
+    return '<button class="btn icon ghost" id="refresh" title="Read AFC again">' + icon('refresh') + '</button>';
   }
 
   function bindBar() {
@@ -275,40 +359,45 @@
       if (l.tool_loaded && l.extruder_index >= 0) heads.set(l.extruder_index, l);
     }
     if (heads.size < 2 && !afc.lanes.some((l) => l.tool_loaded)) return '';
-    let html = '<div class="heads">';
+    let html = '<div class="section-label">Toolheads</div><div class="heads">';
     for (const [idx, lane] of [...heads.entries()].sort((a, b) => a[0] - b[0])) {
-      html += '<div class="head">' + spool(lane, true) + '<div style="min-width:0"><div class="label">' + esc(headName(idx)) + '</div>' +
-        '<div class="what">' + (lane ? esc(lane.name) + ' · ' + esc(lane.material || '') : '<span class="hint">Empty</span>') + '</div></div></div>';
+      const active = lane && lane.name === afc.current_lane;
+      // The unit the loaded lane comes from, when it has one.
+      const unit = lane && lane.unit ? unitByName(lane.unit) : null;
+      html += '<div class="head' + (lane ? ' loaded' : '') + (active ? ' active' : '') + '"><span class="head-ic">' + icon('nozzle') + (lane ? spool(lane) : '') + '</span>' +
+        '<div style="min-width:0"><div class="label">' + esc(headName(idx)) + (active ? '<span class="pill accent">Active</span>' : '') + '</div>' +
+        '<div class="what">' + (lane ? esc([lane.name, lane.material].filter(Boolean).join(' · ')) : '<span class="hint">Empty</span>') + '</div>' +
+        (unit ? '<div class="from" title="' + esc(prettyType(unit.type)) + '">' + icon(unitIconName(unit)) + '<span>' + esc(unit.name.replace(/_/g, ' ')) + '</span></div>' : '') +
+        '</div></div>';
     }
     return html + '</div>';
   }
 
   function unitCard(unit) {
-    let html = '<div class="unit"><div class="unit-head"><div class="unit-icon">' + esc(unitIcon(unit.type, unit.name)) + '</div>' +
-      '<div><div class="name">' + esc(unit.name.replace(/_/g, ' ')) + '</div><div class="type">' + esc(prettyType(unit.type)) +
-      (unit.dryer && unit.dryer.model && !/^ace/i.test(unit.dryer.model) ? ' · ' + esc(bambuModel(unit.dryer.model)) : '') + '</div></div>' +
+    const here = unit.lanes.map(laneByName).filter(Boolean);
+    const loaded = here.filter((l) => l.has_filament).length;
+    const model = unit.dryer && unit.dryer.model && !/^ace/i.test(unit.dryer.model) ? ' · ' + esc(bambuModel(unit.dryer.model)) : '';
+    let html = '<div class="unit"><div class="unit-head">' + unitIcon(unit) +
+      '<div><div class="name">' + esc(unit.name.replace(/_/g, ' ')) + '</div><div class="type">' + esc(prettyType(unit.type)) + model +
+      ' · ' + loaded + ' of ' + here.length + ' loaded</div></div>' +
       '<div class="grow"></div>' + dryChip(unit) + '</div><div class="lanes">';
-    for (const name of unit.lanes) {
-      const l = laneByName(name);
-      if (l) html += laneTile(l);
-    }
+    for (const l of here) html += laneTile(l);
     return html + '</div></div>';
   }
 
   function laneTile(l) {
     const maps = (l.maps || []).length ? l.maps.map((m) => '<span class="tchip">' + esc(m) + '</span>').join('') : '<span class="tchip none">no T</span>';
-    const initial = l.initial_weight > 0 ? l.initial_weight : 1000;
-    const pct = Math.max(0, Math.min(100, (l.weight / initial) * 100));
-    const meterCls = pct < 5 ? ' out' : pct < 15 ? ' low' : '';
     let status = '';
     if (l.tool_loaded) status = '<span class="pill ok"><span class="dot"></span>In ' + esc(headName(l.extruder_index)) + '</span>';
     if (l.spool_id) status += '<span class="pill accent" title="Spoolman spool">#' + esc(l.spool_id) + '</span>';
     if (flowK(l)) status += '<span class="pill" title="Flow K (pressure advance) saved on the spool">' + esc(flowK(l)) + '</span>';
-    return '<div class="lane' + (l.has_filament ? '' : ' empty') + (l.tool_loaded ? ' in-tool' : '') + (l.name === selected ? ' selected' : '') + '" data-lane="' + esc(l.name) + '">' +
-      '<div class="lane-top">' + spool(l) + '<div style="min-width:0"><div class="lane-name">' + esc(l.name) + '</div>' +
-      '<div class="lane-meta">' + maps + '</div></div></div>' +
-      '<div class="lane-sub" title="' + esc(l.filament_name || '') + '">' + esc(laneSubtitle(l)) + '</div>' +
-      (l.has_filament && l.weight > 0 ? '<div class="meter' + meterCls + '"><i style="width:' + pct.toFixed(0) + '%"></i></div><div class="grams"><span>' + grams(l.weight) + '</span><span>' + (l.extruder_index >= 0 ? esc(headName(l.extruder_index)) : '') + '</span></div>' : '') +
+    const pct = remaining(l);
+    const where = l.extruder_index >= 0 ? '<span class="where" title="Feeds ' + esc(headName(l.extruder_index)) + '">' + icon('nozzle') + esc(headName(l.extruder_index)) + '</span>' : '';
+    return '<div class="lane' + (l.has_filament ? '' : ' empty') + (l.tool_loaded ? ' in-tool' : '') + (l.name === selected ? ' selected' : '') +
+      '" data-lane="' + esc(l.name) + '" style="' + tint(l) + '">' +
+      '<div class="lane-top">' + reel(l) + '<div class="lane-id"><div class="lane-name"><span>' + esc(l.name) + '</span>' + maps + '</div>' +
+      '<div class="lane-sub" title="' + esc(l.filament_name || '') + '">' + esc(laneSubtitle(l)) + '</div></div></div>' +
+      '<div class="lane-foot"><span>' + (pct >= 0 ? '<b>' + grams(l.weight) + '</b> · <span class="' + (pct < 5 ? 'out' : pct < 15 ? 'low' : '') + '">' + Math.round(pct) + '%</span>' : l.has_filament ? 'No weight' : '') + '</span>' + where + '</div>' +
       (status ? '<div class="lane-meta">' + status + '</div>' : '') +
       '</div>';
   }
@@ -337,16 +426,43 @@
     return parts.join(' · ');
   }
 
+  // The unit's temperature and humidity with their icons, or '' with no reading.
+  function climateIcons(d, cls) {
+    let html = '';
+    if (d.temperature >= 0) html += '<span title="Temperature in the unit">' + icon('temp') + Math.round(d.temperature) + ' °C</span>';
+    if (d.humidity >= 0) html += '<span title="Relative humidity in the unit">' + icon('humidity') + Math.round(d.humidity) + '%</span>';
+    return html ? '<span class="' + cls + '">' + html + '</span>' : '';
+  }
+
+  // An ACE reports a start on its next status poll, a few seconds after the start
+  // command, so for a while after one the unit shows as starting.
+  function dryStartingFor(unit) {
+    if (!dryStarting || dryStarting.unit !== unit.name) return false;
+    if (unit.dryer && unit.dryer.drying) {
+      dryStarting = null;
+      return false;
+    }
+    if (Date.now() > dryStarting.until) {
+      dryStarting = null;
+      toast(unit.name.replace(/_/g, ' ') + ' has not reported drying. Check the unit and try again.', true);
+      return false;
+    }
+    return true;
+  }
+
   function dryChip(unit) {
     const d = unit.dryer;
     if (!d) return '';
-    if (d.drying) {
-      return '<button class="dry-chip on" data-dry="' + esc(unit.name) + '" title="Drying: open the dryer">' +
-        '<span class="dot"></span>' + Math.round(d.target) + ' °C · ' + duration(d.remaining_s) + ' left</button>';
+    if (!d.drying && dryStartingFor(unit)) {
+      return '<button class="dry-chip on" data-dry="' + esc(unit.name) + '" title="Starting: open the dryer">' +
+        icon('dry') + 'Starting at ' + Math.round(dryStarting.temp) + ' °C</button>';
     }
-    const c = climate(d);
-    return (c ? '<span class="hint">' + esc(c) + '</span>' : '') +
-      '<button class="btn" data-dry="' + esc(unit.name) + '"' + (d.online ? '' : ' disabled title="The unit is offline"') + '>Dry</button>';
+    if (d.drying) {
+      return climateIcons(d, 'climate') + '<button class="dry-chip on" data-dry="' + esc(unit.name) + '" title="Drying: open the dryer">' +
+        icon('dry') + Math.round(d.target) + ' °C · ' + duration(d.remaining_s) + ' left</button>';
+    }
+    return climateIcons(d, 'climate') +
+      '<button class="btn sm" data-dry="' + esc(unit.name) + '"' + (d.online ? '' : ' disabled title="The unit is offline"') + '>' + icon('dry') + 'Dry</button>';
   }
 
   function dryKey(material) {
@@ -389,15 +505,19 @@
     if (d.drying) {
       const total = d.duration_s > 0 ? d.duration_s : 0;
       const pct = total ? Math.max(0, Math.min(100, 100 * (1 - d.remaining_s / total))) : 0;
-      body = '<div class="dry-live"><div class="dry-big">' + Math.round(d.target) + ' °C</div>' +
+      body = '<div class="dry-live"><div class="dry-big">' + icon('dry') + Math.round(d.target) + ' °C</div>' +
         '<div><div>' + duration(d.remaining_s) + ' left' + (total ? ' of ' + duration(total) : '') + '</div>' +
         '<div class="hint">' + esc(climate(d) || 'No reading yet') + (d.rotate ? ' · spools turning' : '') + '</div></div></div>' +
         (total ? '<div class="meter"><i style="width:' + pct.toFixed(0) + '%"></i></div>' : '') +
         (d.note ? '<div class="pill warn" style="margin-top:10px">' + esc(d.note) + '</div>' : '') +
         '<div class="actions"><div class="grow"></div><button class="btn ghost" id="dry-close">Close</button>' +
         '<button class="btn danger" id="dry-stop">Stop drying</button></div>';
+    } else if (dryStartingFor(unit)) {
+      body = '<div class="dry-live"><div class="dry-big">' + icon('dry') + Math.round(dryStarting.temp) + ' °C</div>' +
+        '<div><div>Starting the dryer…</div><div class="hint">' + esc(climate(d) || 'Waiting for the unit') + '</div></div></div>' +
+        '<div class="actions"><div class="grow"></div><button class="btn ghost" id="dry-close">Close</button></div>';
     } else {
-      body = '<div class="dry-climate">' + esc(climate(d) || 'No temperature or humidity reading') + '</div>' +
+      body = (climateIcons(d, 'dry-climate') || '<div class="dry-climate">No temperature or humidity reading</div>') +
         '<div class="presets">' + DRY_PRESETS.map((p) => '<button class="preset' + (f.material === p.m ? ' cur' : '') + (mats.has(p.m) ? ' here' : '') +
           '" data-preset="' + p.m + '"' + (p.t > max ? ' title="' + p.m + ' usually dries at ' + p.t + ' °C"' : '') + '><b>' + p.m + '</b>' +
           '<span' + (p.t > max ? ' class="capped"' : '') + '>' + Math.min(p.t, max) + ' °C · ' + p.h + ' h</span></button>').join('') + '</div>' +
@@ -415,7 +535,7 @@
         '<button class="btn ghost" id="dry-close">Cancel</button><button class="btn primary" id="dry-start">Start drying</button></div>';
     }
     return '<div class="modal-back" id="dry-back"><div class="modal" id="dry-modal" role="dialog">' +
-      '<h2><span class="unit-icon">' + esc(unitIcon(unit.type, unit.name)) + '</span>Dry ' + esc(unit.name.replace(/_/g, ' ')) +
+      '<h2>' + unitIcon(unit) + 'Dry ' + esc(unit.name.replace(/_/g, ' ')) +
       '<span class="hint">' + esc(model) + '</span></h2>' + body + '</div></div>';
   }
 
@@ -427,10 +547,19 @@
     const max = Math.round(unit.dryer.max_temp || 85);
     if (unit.dryer.drying) {
       $('dry-stop').onclick = async () => {
-        await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'stop' }), 'Dryer stopped');
+        await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'stop' }).then((data) => {
+          // The unit may report the stop a few seconds later; the card catches up on the next read.
+          if (data && !data.error) {
+            dryUnit = null;
+            dryForm = null;
+            setTimeout(() => load(true), 1500);
+          }
+          return data;
+        }), 'Dryer stopped');
       };
       return;
     }
+    if (!$('dry-start')) return;  // starting: only Close
     for (const el of document.querySelectorAll('[data-preset]')) {
       el.onclick = () => { dryForm = Object.assign(presetFor(el.dataset.preset, max), { rotate: $('dry-rotate').checked }); render(); };
     }
@@ -443,8 +572,13 @@
       const temp = Math.round(dryForm.temp), minutes = Math.round(dryForm.hours * 60);
       if (!(temp >= 35 && temp <= max)) return toast('Temperature must be 35-' + max + ' °C', true);
       if (!(minutes >= 1 && minutes <= 2880)) return toast('Time must be up to 48 hours', true);
-      await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'start', temp: temp, minutes: minutes, rotate: dryForm.rotate }),
-        'Drying ' + unit.name.replace(/_/g, ' ') + ' at ' + temp + ' °C');
+      await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'start', temp: temp, minutes: minutes, rotate: dryForm.rotate }).then((data) => {
+        if (data && !data.error) {
+          dryStarting = { unit: unit.name, temp: temp, until: Date.now() + 30000 };
+          setTimeout(() => load(true), 1500);
+        }
+        return data;
+      }), 'Drying ' + unit.name.replace(/_/g, ' ') + ' at ' + temp + ' °C');
     };
   }
 
@@ -458,8 +592,10 @@
       tOptions += '<option value="T' + t + '"' + ((l.maps || [])[0] === 'T' + t ? ' selected' : '') + '>T' + t + (owner && owner.name !== l.name ? ' (now ' + esc(owner.name) + ')' : '') + '</option>';
     }
     const color = hexOk(l.color) ? l.color : '#FFFFFF';
-    return '<div class="drawer" id="drawer"><h2>' + spool(l, true) + esc(l.name) + '<span class="hint">' + esc(l.unit.replace(/_/g, ' ')) + (l.extruder_index >= 0 ? ' · feeds ' + esc(headName(l.extruder_index)) : '') + '</span></h2>' +
-      '<div class="form">' +
+    return '<div class="drawer" id="drawer"><div class="sheet-head">' + spool(l) +
+      '<div class="grow"><h2>' + esc(l.name) + '</h2><span class="hint">' + esc(l.unit.replace(/_/g, ' ')) + (l.extruder_index >= 0 ? ' · feeds ' + esc(headName(l.extruder_index)) : '') + '</span></div>' +
+      '<button class="btn icon ghost" id="close" title="Close">' + icon('close') + '</button></div>' +
+      '<div class="sheet-body"><div class="form">' +
       '<div class="field"><label>Color</label><div class="color-row"><input type="color" id="f-colorpick" value="' + esc(color) + '"><input id="f-color" value="' + esc(color) + '" maxlength="7"></div></div>' +
       '<div class="field"><label>Material</label><input id="f-material" list="materials" value="' + esc(l.material || '') + '"><datalist id="materials">' + MATERIALS.map((m) => '<option value="' + m + '">').join('') + '</datalist></div>' +
       '<div class="field"><label>Remaining (g)</label><input id="f-weight" type="number" min="0" step="1" value="' + esc(Math.round(l.weight || 0)) + '"></div>' +
@@ -468,14 +604,15 @@
       '<div class="field"><label>Bed °C</label><input id="f-bed" type="number" min="0" max="200" value="' + esc(l.bed_temp || '') + '"></div>' +
       '<div class="field wide"><label>Spoolman spool ID' + (state.afc.spoolman ? '' : ' (Spoolman is not set up in AFC)') + '</label>' +
       '<div class="color-row"><input id="f-spool" type="number" min="0" step="1" value="' + esc(l.spool_id || '') + '" placeholder="none">' +
-      (state.afc.spoolman_url ? '<button class="btn" id="open-spool"' + (l.spool_id ? '' : ' disabled') + '>Open in Spoolman</button>' : '') + '</div>' +
+      (state.afc.spoolman_url ? '<button class="btn" id="open-spool"' + (l.spool_id ? '' : ' disabled') + ' title="Open this spool in Spoolman">' + icon('open') + 'Open in Spoolman</button>' : '') + '</div>' +
       '<span class="hint">Setting a spool ID makes AFC fill color, material and weight from Spoolman.' +
       (flowK(l) ? ' The spool\'s saved flow K (pressure advance) is ' + esc(flowK(l).slice(2)) + '.' : '') + '</span></div>' +
       '</div>' +
-      '<div class="actions"><button class="btn primary" id="save" disabled>Save</button><button class="btn ghost" id="close">Close</button><div class="grow"></div>' +
-      '<button class="btn" id="act-load"' + (l.has_filament && !l.tool_loaded ? '' : ' disabled') + ' title="CHANGE_TOOL: swap this lane into its toolhead">Load</button>' +
-      '<button class="btn" id="act-unload"' + (l.tool_loaded ? '' : ' disabled') + ' title="TOOL_UNLOAD: pull it out of the toolhead">Unload</button>' +
-      '<button class="btn danger" id="act-eject"' + (l.has_filament && !l.tool_loaded ? '' : ' disabled') + ' title="LANE_UNLOAD: retract it out of the unit">Eject</button></div></div>';
+      '<div class="lane-actions">' +
+      '<button class="btn" id="act-load"' + (l.has_filament && !l.tool_loaded ? '' : ' disabled') + ' title="CHANGE_TOOL: swap this lane into its toolhead">' + icon('load') + 'Load</button>' +
+      '<button class="btn" id="act-unload"' + (l.tool_loaded ? '' : ' disabled') + ' title="TOOL_UNLOAD: pull it out of the toolhead">' + icon('unload') + 'Unload</button>' +
+      '<button class="btn danger" id="act-eject"' + (l.has_filament && !l.tool_loaded ? '' : ' disabled') + ' title="LANE_UNLOAD: retract it out of the unit">' + icon('eject') + 'Eject</button></div></div>' +
+      '<div class="sheet-foot"><button class="btn primary" id="save" disabled>Save</button></div></div>';
   }
 
   function bindEditor(l) {
@@ -520,7 +657,8 @@
     };
 
     const action = (name) => async () => {
-      await run(() => call('sw_AFC_LaneAction', { lane: l.name, action: name }), 'Sent to AFC');
+      // AFC runs the move on its own; the cards follow it on the next reads.
+      await run(() => call('sw_AFC_LaneAction', { lane: l.name, action: name }), { load: 'Loading ', unload: 'Unloading ', eject: 'Ejecting ' }[name] + l.name);
     };
     $('act-load').onclick = action('load');
     $('act-unload').onclick = action('unload');
@@ -592,16 +730,16 @@
       rows += '<div class="map-row' + (f.used ? '' : ' unused') + '">' +
         '<div class="fil">' + swatch(f.color) + '<div style="min-width:0"><div class="t">T' + f.id + ' · ' + esc(f.type || '?') + '</div>' +
         '<div class="s" title="' + esc(f.preset) + '">' + (f.used ? (f.grams > 0 ? grams(f.grams) + ' · ' : '') + esc(f.preset || '') : 'Not used on this plate') + '</div></div></div>' +
-        '<div class="arrow">→</div>' +
+        '<div class="arrow">' + icon('arrow') + '</div>' +
         (f.used ? picker(f, l) : '<div class="hint">—</div>') +
         '<div class="warns">' + warns.map((w) => '<span class="pill ' + w[0] + '">' + esc(w[1]) + '</span>').join('') + '</div></div>';
     }
 
     $app.innerHTML =
-      '<div class="bar"><div><h1>Match filaments to AFC lanes</h1><div class="sub">' + used.length + ' filament' + (used.length === 1 ? '' : 's') + ' on this plate · ' +
+      '<div class="bar"><span class="logo">' + icon('afc') + '</span><div><h1>Match filaments to AFC lanes</h1><div class="sub">' + used.length + ' filament' + (used.length === 1 ? '' : 's') + ' on this plate · ' +
       afc.lanes.filter((x) => x.has_filament).length + ' loaded lanes in ' + laneUnits().length + ' unit' + (laneUnits().length === 1 ? '' : 's') + '</div></div>' +
       '<div class="grow"></div><button class="btn" id="auto" title="Match by material, then color">Auto match</button>' +
-      '<button class="btn icon ghost" id="refresh" title="Read AFC again">⟳</button></div>' +
+      refreshButton() + '</div>' +
       '<div class="scroll" id="scroll">' + summary(used) +
       (state.project.sliced ? '' : '<div class="summary"><span class="pill warn">Slice the plate to see grams and which filaments it uses</span></div>') +
       '<div class="map-head"><div>Plate filament</div><div></div><div>AFC lane</div></div>' + rows + '</div>' +
@@ -644,17 +782,16 @@
     if (openMenu === f.id) {
       html += '<div class="menu">';
       for (const unit of laneUnits()) {
-        html += '<div class="grp">' + esc(unit.name.replace(/_/g, ' ')) + ' · ' + esc(prettyType(unit.type)) + '</div>';
+        html += '<div class="grp">' + icon(unitIconName(unit)) + esc(unit.name.replace(/_/g, ' ')) + ' · ' + esc(prettyType(unit.type)) + '</div>';
         for (const name of unit.lanes) {
           const x = laneByName(name);
           if (!x) continue;
           const takenBy = filaments().filter((o) => o.used && o.id !== f.id && mapping[o.id] === name).map((o) => 'T' + o.id);
-          const sameMat = x.material && f.type && materialKey(x.material) === materialKey(f.type);
           html += '<div class="opt' + (x.has_filament ? '' : ' disabled') + (mapping[f.id] === name ? ' cur' : '') + '" data-fil="' + f.id + '" data-lane="' + esc(name) + '">' +
             spool(x, true) + '<div class="txt"><div class="l1">' + esc(name) + ' · ' + esc(x.has_filament ? (x.material || '?') : 'empty') +
-            (sameMat ? '' : '') + '</div><div class="l2">' + esc(x.vendor || '') + (x.weight > 0 && x.has_filament ? ' · ' + grams(x.weight) : '') +
-            (x.extruder_index >= 0 ? ' · ' + esc(headName(x.extruder_index)) : '') + (flowK(x) && x.has_filament ? ' · ' + esc(flowK(x)) : '') +
-            (takenBy.length ? ' · used by ' + takenBy.join(', ') : '') + '</div></div>' +
+            '</div><div class="l2">' + esc([x.vendor, x.weight > 0 && x.has_filament ? grams(x.weight) : '',
+              x.extruder_index >= 0 ? headName(x.extruder_index) : '', x.has_filament ? flowK(x) : '',
+              takenBy.length ? 'used by ' + takenBy.join(', ') : ''].filter(Boolean).join(' · ')) + '</div></div>' +
             (x.maps || []).map((m) => '<span class="tchip">' + esc(m) + '</span>').join('') + '</div>';
         }
       }
@@ -755,7 +892,9 @@
   })(30);
   if (VIEW === 'panel') {
     setInterval(() => {
-      const dryEditing = dryUnit && !((unitByName(dryUnit) || {}).dryer || {}).drying;
+      // A wait that ran out shows the form again even when the poll brings nothing new.
+      if (dryStarting && Date.now() > dryStarting.until) render();
+      const dryEditing = dryUnit && !((unitByName(dryUnit) || {}).dryer || {}).drying && !(dryStarting && dryStarting.unit === dryUnit);
       if (document.hidden || busy || editorDirty || dryEditing || pending.size) return;
       load(true);
     }, 5000);

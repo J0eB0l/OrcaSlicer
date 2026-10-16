@@ -140,6 +140,11 @@ struct RefreshJob : std::enable_shared_from_this<RefreshJob>
 // only writes it after a calibration, so this mostly bounds how soon a new one shows.
 constexpr std::chrono::seconds k_flow_k_max_age{120};
 
+// Moonraker answers a G-code script only once Klipper has run it, and a lane load (a
+// long bowden, an ACE feeding, a purge) can take minutes. The printer connection waits
+// as long for one; past it a lane move counts as done anyway.
+constexpr std::chrono::minutes k_lane_move_timeout{15};
+
 // Signature of the slots the slicer sees; a change means the combo boxes need rebuilding.
 std::string slots_key(const AFCProtocol::Snapshot &s)
 {
@@ -392,7 +397,7 @@ void AFCManager::read_flow_k(const std::shared_ptr<PrintHost> &host, const std::
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_sn != sn || !m_snapshot.present)
             return;
-        spoolman_url = m_snapshot.spoolman_url;
+        spoolman_url = AFCProtocol::spoolman_for_printer(m_snapshot.spoolman_url, host->get_host());
         const auto now = std::chrono::steady_clock::now();
         for (const AFCProtocol::Lane &lane : m_snapshot.lanes) {
             if (lane.spool_id <= 0 || m_flow_k_reading.count(lane.spool_id))
@@ -882,9 +887,56 @@ void AFCManager::send_gcode(const std::shared_ptr<PrintHost> &host, const std::v
         done("");
         return;
     }
+    // Klipper runs one script at a time, so this one would wait behind the lane move.
+    const std::string moving = instance().lane_moving();
+    if (!moving.empty()) {
+        done(moving + "; try again when it is done");
+        return;
+    }
     std::string script;
     for (const std::string &line : gcode)
         script += (script.empty() ? "" : "\n") + line;
+    run_script(host, script, std::move(done));
+}
+
+void AFCManager::start_lane_move(const std::shared_ptr<PrintHost> &host, const std::string &gcode, const std::string &lane,
+                                 const std::string &what)
+{
+    int id;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        id           = ++m_move_id;
+        m_move       = what;
+        m_move_until = std::chrono::steady_clock::now() + k_lane_move_timeout;
+    }
+    run_script(host, gcode, [this, id, lane](const std::string &error) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (id != m_move_id)
+            return;
+        m_move.clear();
+        // A timeout only means Klipper is still at it; anything else is worth saying.
+        if (!error.empty() && !boost::icontains(error, "timeout") && !boost::icontains(error, "timed out"))
+            m_move_error = lane + ": " + error;
+    });
+}
+
+std::string AFCManager::lane_moving() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return std::chrono::steady_clock::now() < m_move_until ? m_move : std::string();
+}
+
+std::string AFCManager::take_lane_move_error()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::string error;
+    error.swap(m_move_error);
+    return error;
+}
+
+void AFCManager::run_script(const std::shared_ptr<PrintHost> &host, const std::string &script,
+                            std::function<void(const std::string &error)> done)
+{
     host->async_jsonrpc_call("printer.gcode.script", json{{"script", script}}, [done](const json &res) {
         if (res.is_null()) {
             done("The printer did not take the command");

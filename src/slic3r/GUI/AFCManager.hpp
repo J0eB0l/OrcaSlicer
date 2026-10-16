@@ -126,11 +126,25 @@ public:
     nlohmann::json page_state(bool include_project) const;
 
     // Send G-code over the printer connection; `done` gets an error string ("" = ok).
+    // While a lane move from the page runs, it fails with "lane4 is loading; ...".
     static void send_gcode(const std::shared_ptr<PrintHost> &host, const std::vector<std::string> &gcode,
                            std::function<void(const std::string &error)> done);
 
+    // Start a lane load, unload or eject and return without waiting for it, since Moonraker
+    // answers only once Klipper has run it; `what` reads "lane4 is loading". An error from
+    // Klipper is kept for take_lane_move_error(); a timeout says nothing, Klipper is still at it.
+    void start_lane_move(const std::shared_ptr<PrintHost> &host, const std::string &gcode, const std::string &lane,
+                         const std::string &what);
+    // "lane4 is loading" while a lane move from the page runs, else "".
+    std::string lane_moving() const;
+    // How the last lane move failed, once, else "".
+    std::string take_lane_move_error();
+
 private:
     AFCManager() = default;
+
+    static void run_script(const std::shared_ptr<PrintHost> &host, const std::string &script,
+                           std::function<void(const std::string &error)> done);
 
     void finish_refresh(AFCProtocol::Snapshot snapshot, const std::string &sn);
     // Read the flow K of every linked spool not read lately, through Moonraker's
@@ -154,6 +168,10 @@ private:
     std::map<int, FlowK>                    m_flow_k;         // by Spoolman spool id, for the printer in m_sn
     std::set<int>                           m_flow_k_reading; // spool ids with a read on the way
     std::condition_variable                 m_flow_k_read;    // a flow K read finished
+    std::string                             m_move;           // "lane4 is loading" while a lane move runs
+    std::chrono::steady_clock::time_point   m_move_until{};   // when it counts as done anyway
+    int                                     m_move_id{0};     // which lane move m_move is
+    std::string                             m_move_error;     // how the last lane move failed, until the page shows it
 };
 
 } // namespace GUI

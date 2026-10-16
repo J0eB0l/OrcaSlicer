@@ -800,6 +800,51 @@ double spool_flow_k(const json &spool)
     return std::isfinite(k) && k >= 0 ? k : -1;
 }
 
+namespace {
+
+// Where the host of a URL or a print_host setting ("192.168.1.5:7125",
+// "http://user@[fe80::1]:7912/") starts and ends, brackets included.
+std::pair<size_t, size_t> host_span(const std::string &url)
+{
+    size_t begin = url.find("://");
+    begin        = begin == std::string::npos ? 0 : begin + 3;
+    size_t end   = url.find_first_of("/?#", begin);
+    if (end == std::string::npos)
+        end = url.size();
+    const size_t at = url.find('@', begin);
+    if (at < end)
+        begin = at + 1;
+    if (begin < end && url[begin] == '[') {
+        const size_t close = url.find(']', begin);
+        return {begin, close < end ? close + 1 : end};
+    }
+    const size_t colon = url.find(':', begin);
+    // Two colons without brackets: a bare IPv6 address, with no port.
+    if (colon < end && url.find(':', colon + 1) >= end)
+        end = colon;
+    return {begin, end};
+}
+
+} // namespace
+
+std::string spoolman_for_printer(const std::string &spoolman_url, const std::string &printer_host)
+{
+    const auto [begin, end] = host_span(spoolman_url);
+    std::string host        = spoolman_url.substr(begin, end - begin);
+    std::transform(host.begin(), host.end(), host.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if (host.size() > 1 && host.front() == '[')
+        host = host.substr(1, host.size() - 2);
+    if (host != "localhost" && host != "0.0.0.0" && host != "::1" && host != "::" && host.rfind("127.", 0) != 0)
+        return spoolman_url;
+    const auto [printer_begin, printer_end] = host_span(printer_host);
+    std::string printer                     = printer_host.substr(printer_begin, printer_end - printer_begin);
+    if (printer.empty())
+        return spoolman_url;
+    if (printer.front() != '[' && printer.find(':') != std::string::npos)
+        printer = "[" + printer + "]";
+    return spoolman_url.substr(0, begin) + printer + spoolman_url.substr(end);
+}
+
 json to_json(const Snapshot &s)
 {
     json j;

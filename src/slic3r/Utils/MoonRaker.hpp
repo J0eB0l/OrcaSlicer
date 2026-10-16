@@ -350,7 +350,8 @@ private:
                         const nlohmann::json& params,
                         bool need_response,
                         std::function<void(const nlohmann::json& response)> callback,
-                        std::function<void()> timeout_callback);
+                        std::function<void()> timeout_callback,
+                        std::chrono::milliseconds timeout = std::chrono::milliseconds(80000));
 
     bool add_response_target(int64_t id,
                            std::function<void(const nlohmann::json&)> callback,

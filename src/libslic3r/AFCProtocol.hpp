@@ -185,6 +185,12 @@ void merge_lane_data(const nlohmann::json &lane_data, Snapshot &out);
 /// spool has none.
 double spool_flow_k(const nlohmann::json &spool);
 
+/// Spoolman's address as this computer reaches it. AFC reports it as the
+/// printer sees it, so a Spoolman on the printer itself ("localhost",
+/// 127.0.0.1) is at the printer's address (`printer_host`, as print_host holds
+/// it), on Spoolman's own port.
+std::string spoolman_for_printer(const std::string &spoolman_url, const std::string &printer_host);
+
 /// Snapshot as JSON for the AFC web page and the cache.
 nlohmann::json to_json(const Snapshot &snapshot);
 

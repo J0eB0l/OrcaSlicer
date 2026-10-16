@@ -126,7 +126,12 @@
           const u = afc.units.find((x) => x.name === p.unit);
           if (!u || !u.dryer) return reply(msg.header, -1, p.unit + ' has no dryer');
           if (p.action === 'stop') Object.assign(u.dryer, { drying: false, target: 0, remaining_s: 0, duration_s: 0 });
-          else Object.assign(u.dryer, { drying: true, target: p.temp, remaining_s: p.minutes * 60, duration_s: p.minutes * 60, rotate: !!p.rotate });
+          else {
+            const on = () => Object.assign(u.dryer, { drying: true, target: p.temp, remaining_s: p.minutes * 60, duration_s: p.minutes * 60, rotate: !!p.rotate });
+            // An ACE reports the start on its next status poll.
+            if (u.dryer.kind === 'ace') setTimeout(on, 3000);
+            else on();
+          }
           return reply(msg.header, 200, 'OK', state(false));
         }
         default:

@@ -556,6 +556,23 @@ TEST_CASE("flow K is read from the Spoolman spool's extra field", "[AFCProtocol]
     }
 }
 
+TEST_CASE("a Spoolman on the printer opens at the printer's address", "[AFCProtocol]")
+{
+    using AFCProtocol::spoolman_for_printer;
+    CHECK(spoolman_for_printer("http://localhost:7912", "192.168.1.50") == "http://192.168.1.50:7912");
+    CHECK(spoolman_for_printer("http://127.0.0.1:7912/", "http://192.168.1.50:7125") == "http://192.168.1.50:7912/");
+    CHECK(spoolman_for_printer("http://LocalHost:7912/spoolman", "printer.local:80") == "http://printer.local:7912/spoolman");
+    CHECK(spoolman_for_printer("http://[::1]:7912", "http://[fe80::1]:7125/") == "http://[fe80::1]:7912");
+    CHECK(spoolman_for_printer("http://0.0.0.0", "fe80::1") == "http://[fe80::1]");
+
+    SECTION("any other address is kept") {
+        CHECK(spoolman_for_printer("http://spoolman.lan:7912", "192.168.1.50") == "http://spoolman.lan:7912");
+        CHECK(spoolman_for_printer("http://192.168.1.9:7912", "192.168.1.50") == "http://192.168.1.9:7912");
+        CHECK(spoolman_for_printer("http://localhost:7912", "") == "http://localhost:7912");
+        CHECK(spoolman_for_printer("", "192.168.1.50") == "");
+    }
+}
+
 TEST_CASE("lanes carry flow K to the page only when the spool has one", "[AFCProtocol]")
 {
     AFCProtocol::Snapshot s;

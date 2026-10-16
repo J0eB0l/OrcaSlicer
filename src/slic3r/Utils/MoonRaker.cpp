@@ -422,8 +422,10 @@ void Moonraker::async_jsonrpc_call(const std::string& method, const nlohmann::js
         http.header("Content-Type", "application/json");
         http.set_post_body(body);
     }
+    // Moonraker answers a G-code script only once Klipper has run it, and an AFC lane
+    // load can take minutes.
     http.timeout_connect(5)
-        .timeout_max(30)
+        .timeout_max(method == "printer.gcode.script" ? 15 * 60 : 30)
         .on_complete([callback, method](std::string body, unsigned) {
             if (!callback)
                 return;
@@ -1796,10 +1798,13 @@ void Moonraker_Mqtt::async_jsonrpc_call(const std::string& method, const nlohman
         if (callback)
             std::thread([callback, res]() { callback(res); }).detach();
     };
+    // Moonraker answers a G-code script only once Klipper has run it, and an AFC lane
+    // load can take minutes.
+    const std::chrono::milliseconds timeout(method == "printer.gcode.script" ? 15 * 60 * 1000 : 80000);
     if (!send_to_request(method, params.is_null() ? json::object() : params, true, answer, [answer, method]() {
             BOOST_LOG_TRIVIAL(warning) << "[Moonraker_Mqtt] JSON-RPC call timed out: " << method;
             answer(json{{"error", "timeout"}});
-        })) {
+        }, timeout)) {
         BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to send JSON-RPC call: " << method;
         answer(json{{"error", "send failed"}});
     }
@@ -2857,7 +2862,8 @@ bool Moonraker_Mqtt::send_to_request(
     const json& params,
     bool need_response,
     std::function<void(const nlohmann::json& response)> callback,
-    std::function<void()> timeout_callback)
+    std::function<void()> timeout_callback,
+    std::chrono::milliseconds timeout)
 {
     auto& wcp_loger = GUI::WCP_Logger::getInstance();
     wcp_loger.add_log("sending request, method: " + method + ", need response: " + std::to_string(need_response), false, "", "Moonraker_Mqtt", "info");
@@ -2876,7 +2882,7 @@ bool Moonraker_Mqtt::send_to_request(
     wcp_loger.add_log("generated seq id: " + std::to_string(seq_id), false, "", "Moonraker_Mqtt", "info");
 
     if (need_response) {
-        if (!add_response_target(seq_id, callback, timeout_callback)) {
+        if (!add_response_target(seq_id, callback, timeout_callback, false, timeout)) {
             BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to add response target";
             wcp_loger.add_log("failed to add response target", false, "", "Moonraker_Mqtt", "error");
             return false;

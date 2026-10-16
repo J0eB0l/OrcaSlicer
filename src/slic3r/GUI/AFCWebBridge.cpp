@@ -88,8 +88,10 @@ void SSWCP_AFC_Instance::reply_state(bool refresh, bool include_project, const s
     auto answer = [self, include_project, error]() {
         wxGetApp().CallAfter([self, include_project, error]() {
             self->m_res_data = AFCManager::instance().page_state(include_project);
-            if (!error.empty())
-                self->m_res_data["error"] = error;
+            // A lane move that failed since the last state shows here, once.
+            const std::string shown = error.empty() ? AFCManager::instance().take_lane_move_error() : error;
+            if (!shown.empty())
+                self->m_res_data["error"] = shown;
             self->send_to_js();
             self->finish_job();
         });
@@ -136,11 +138,14 @@ void SSWCP_AFC_Instance::sw_AFC_LaneAction()
     std::string gcode, error;
     if (!AFCProtocol::build_lane_action_gcode(AFCManager::instance().snapshot(), lane, action, gcode, error))
         return fail(error);
+    const std::string moving = AFCManager::instance().lane_moving();
+    if (!moving.empty())
+        return reply_state(false, false, moving + "; wait until it is done");
 
     // Filament moves only on an idle printer: never in the middle of a print.
     auto self = std::static_pointer_cast<SSWCP_AFC_Instance>(shared_from_this());
     host->async_jsonrpc_call("printer.objects.query", json{{"objects", {{"print_stats", {"state"}}}}},
-                             [self, host, gcode](const json &res) {
+                             [self, host, gcode, lane, action](const json &res) {
                                  std::string state;
                                  try {
                                      state = res.at("data").at("status").at("print_stats").at("state").get<std::string>();
@@ -153,8 +158,13 @@ void SSWCP_AFC_Instance::sw_AFC_LaneAction()
                                      self->reply_state(false, false, "Could not read the printer state, so nothing was moved");
                                      return;
                                  }
-                                 AFCManager::send_gcode(host, {gcode},
-                                                        [self](const std::string &err) { self->reply_state(true, false, err); });
+                                 // The page follows the move on its next reads, and an error from
+                                 // Klipper comes with the first state after it.
+                                 const std::string what = lane + (action == "load"   ? " is loading" :
+                                                                  action == "unload" ? " is unloading" :
+                                                                                       " is ejecting");
+                                 AFCManager::instance().start_lane_move(host, gcode, lane, what);
+                                 self->reply_state(true, false);
                              });
 }
 
@@ -232,7 +242,8 @@ void SSWCP_AFC_Instance::sw_AFC_OpenSpoolman()
     const AFCProtocol::Snapshot snap = AFCManager::instance().snapshot();
     if (snap.spoolman_url.empty())
         return fail("AFC did not report a Spoolman address");
-    std::string url = snap.spoolman_url;
+    auto        host = connected_host();
+    std::string url  = AFCProtocol::spoolman_for_printer(snap.spoolman_url, host ? host->get_host() : std::string());
     while (!url.empty() && url.back() == '/')
         url.pop_back();
     const int spool = m_param_data.value("spool_id", 0);
