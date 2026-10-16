@@ -45,9 +45,10 @@ public:
     bool shouldDeleteMixedFilaments() const;
 
     void setOverwriteMode();
-    // AFC: overwrite gives one slot per printer slot (T number), empty ones included,
-    // instead of only the non-empty ones among the project's current count.
-    void setKeepEmptySlots(bool keep);
+    // AFC: overwrite gives one slot per loaded lane, instead of one per loaded printer slot
+    // among the project's current count, and moves each project slot to its lane's new slot.
+    // `designTools[i]` is the AFC T number project slot i prints as (AFCProtocol::slot_tool_numbers).
+    void setAfcLanes(std::vector<int> designTools);
 
     bool Layout() override;
 
@@ -58,6 +59,8 @@ private:
 
     void onAutoMatch();
     void onCoverMatch();
+    // The printer filaments overwrite mode syncs, in slot order.
+    std::vector<FilamentData> overwriteFilaments() const;
 
     void initPlatePreview();
     void loadPlateThumbnail(unsigned int plateIndex);
@@ -107,7 +110,8 @@ private:
     bool m_bMappingMode        = true;
     bool m_hasMixedFilaments   = false;
     bool m_shouldDeleteMixedFilaments = false;
-    bool m_bKeepEmptySlots     = false;
+    bool m_bAfcLanes           = false;
+    std::vector<int> m_designTools;
 };
 
 } // namespace GUI

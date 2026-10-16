@@ -278,11 +278,12 @@ bool build_lane_action_gcode(const Snapshot &snapshot, const std::string &lane, 
 /// Project filament as the print popup sees it.
 struct ProjectFilament
 {
-    int         id{0};      ///< 0-based filament index, the T(n) the G-code uses
+    int         id{0};      ///< the T number the G-code uses for it (slot_tool_numbers)
     std::string color;      ///< "#RRGGBB"
     std::string type;       ///< e.g. "PLA"
     double      grams{0};   ///< grams this print uses, 0 when unknown
     bool        used{true}; ///< the sliced plate uses this filament
+    int         slot{0};    ///< 0-based filament slot
 };
 
 /// Color distance callback, lower = closer (the GUI passes CIEDE2000).
@@ -306,8 +307,10 @@ double rgb_distance(const std::string &a, const std::string &b);
 /// first. Loopback and link-local addresses are left out.
 std::vector<std::string> lan_addresses(const nlohmann::json &system_info);
 
-/// The U1's map_table for this print: every used filament's T(n) paired with
-/// the toolhead of the lane AFC maps to it. False, with `error` set, when a
+/// The U1's map_table for this print: every used filament's slot paired with
+/// the toolhead of the lane AFC maps its T number to. The U1 reads the file's
+/// filaments by slot (its filament_used_g list, SM_PRINT_PREEXTRUDE_FILAMENT
+/// INDEX=), while AFC runs the T commands. False, with `error` set, when a
 /// used filament has no lane or its lane has no toolhead.
 bool u1_map_table(const Snapshot &snapshot, const std::vector<ProjectFilament> &filaments,
                   std::vector<std::pair<int, int>> &table, std::string &error);

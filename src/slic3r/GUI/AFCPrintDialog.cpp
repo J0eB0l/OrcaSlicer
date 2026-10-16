@@ -213,7 +213,11 @@ boost::filesystem::path AFCPrintDialog::gcode_for_lane_map(const boost::filesyst
         flush.multiplier = multiplier->value;
     if (const auto *diameters = sliced.option<ConfigOptionFloats>("filament_diameter"))
         flush.filament_diameters = diameters->values;
-    AFCProtocol::PurgeLengths purge(as_sliced, toolheads, std::move(flush));
+    // The G-code changes to each slot's AFC T number, not its index.
+    std::vector<int> tools;
+    if (const auto *afc_tools = sliced.option<ConfigOptionInts>("filament_afc_tool"))
+        tools = AFCProtocol::slot_tool_numbers(afc_tools->values, flush.filament_diameters.size());
+    AFCProtocol::PurgeLengths purge(as_sliced, toolheads, std::move(flush), tools);
 
     boost::filesystem::path out = gcode;
     out.replace_extension(".lanes" + gcode.extension().string());

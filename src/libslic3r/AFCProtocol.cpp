@@ -975,9 +975,21 @@ std::string with_purge_length(const std::string &gcode, const std::string &prefi
     return gcode;
 }
 
-PurgeLengths::PurgeLengths(std::vector<int> sliced, std::vector<int> toolheads, FlushSettings flush)
+PurgeLengths::PurgeLengths(std::vector<int> sliced, std::vector<int> toolheads, FlushSettings flush, const std::vector<int> &tools)
     : m_sliced(std::move(sliced)), m_loads(std::move(toolheads)), m_flush(std::move(flush))
-{}
+{
+    if (tool_numbers_are_slots(tools))
+        return;
+    // Two slots on one lane print as one T number, which reads as the first of them.
+    for (size_t slot = 0; slot < tools.size(); ++slot) {
+        if (tools[slot] < 0)
+            continue;
+        if (m_slot_of.size() <= size_t(tools[slot]))
+            m_slot_of.resize(size_t(tools[slot]) + 1, -1);
+        if (m_slot_of[size_t(tools[slot])] < 0)
+            m_slot_of[size_t(tools[slot])] = int(slot);
+    }
+}
 
 std::string PurgeLengths::apply(const std::string &line)
 {
@@ -990,7 +1002,10 @@ std::string PurgeLengths::apply(const std::string &line)
     // T and a number, then the end of the line, a parameter or a comment: T5, T5 PURGE_LENGTH=4.2, T5 ; load.
     if (end == start + 1 || (end < line.size() && !std::isspace(static_cast<unsigned char>(line[end])) && line[end] != ';'))
         return line;
-    const unsigned int tool        = unsigned(std::stoul(line.substr(start + 1, end - start - 1)));
+    const unsigned int number = unsigned(std::stoul(line.substr(start + 1, end - start - 1)));
+    if (!m_slot_of.empty() && (number >= m_slot_of.size() || m_slot_of[number] < 0))
+        return line;
+    const unsigned int tool        = m_slot_of.empty() ? number : unsigned(m_slot_of[number]);
     const int          sliced_from = m_sliced.change_to(tool);
     if (!m_loads.knows(tool))
         return line;
@@ -1020,7 +1035,7 @@ std::string PurgeLengths::apply(const std::string &line)
     const double diameter = tool < diameters.size() ? diameters[tool] : diameters.empty() ? 1.75 : diameters.back();
     const double area     = 0.78539816339744831 * diameter * diameter; // pi / 4 * d²
     const float  volume   = lane_change_flush(m_flush.matrix, unsigned(from), tool, m_flush.multiplier);
-    return area > 0 && volume > 0 ? with_purge_length(bare, "T", tool, float(volume / area)) : bare;
+    return area > 0 && volume > 0 ? with_purge_length(bare, "T", number, float(volume / area)) : bare;
 }
 
 std::vector<int> toolheads_at_print(std::vector<int> sliced, const std::vector<int> &mapped)
@@ -1033,6 +1048,135 @@ std::vector<int> toolheads_at_print(std::vector<int> sliced, const std::vector<i
         sliced[i] = mapped[i];
     }
     return sliced;
+}
+
+std::vector<int> slot_tool_numbers(const std::vector<int> &linked, size_t slots)
+{
+    std::vector<int> tools(slots, -1);
+    std::set<int>    taken;
+    for (size_t slot = 0; slot < slots && slot < linked.size(); ++slot)
+        if (linked[slot] >= 0) {
+            tools[slot] = linked[slot];
+            taken.insert(linked[slot]);
+        }
+    int next = 0;
+    for (int &tool : tools) {
+        if (tool >= 0)
+            continue;
+        while (taken.count(next) > 0)
+            ++next;
+        tool = next;
+        taken.insert(next);
+    }
+    return tools;
+}
+
+bool tool_numbers_are_slots(const std::vector<int> &tools)
+{
+    for (size_t slot = 0; slot < tools.size(); ++slot)
+        if (tools[slot] != int(slot))
+            return false;
+    return true;
+}
+
+namespace {
+
+bool starts_with_nocase(const std::string &s, size_t pos, size_t end, const char *word)
+{
+    const size_t n = std::strlen(word);
+    if (end - pos < n)
+        return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::toupper(static_cast<unsigned char>(s[pos + i])) != word[i])
+            return false;
+    return true;
+}
+
+bool all_digits(const std::string &s, size_t begin, size_t end)
+{
+    if (begin >= end)
+        return false;
+    for (size_t i = begin; i < end; ++i)
+        if (!std::isdigit(static_cast<unsigned char>(s[i])))
+            return false;
+    return true;
+}
+
+} // namespace
+
+void renumber_tools(std::string &gcode, const std::vector<int> &tools)
+{
+    if (tools.empty())
+        return;
+    // A slot number in [begin, end) of `line`, appended as its T number.
+    auto tool_of = [&tools](const std::string &line, size_t begin, size_t end) {
+        if (end - begin > 4)
+            return line.substr(begin, end - begin);
+        const unsigned long slot = std::stoul(line.substr(begin, end - begin));
+        return slot < tools.size() ? std::to_string(tools[slot]) : line.substr(begin, end - begin);
+    };
+
+    std::string out;
+    size_t      copied = 0; // gcode[copied, line) is still to go to `out` as it is
+    for (size_t line = 0; line < gcode.size();) {
+        const size_t next  = std::min(gcode.find('\n', line), gcode.size());
+        const size_t code  = std::min(gcode.find(';', line), next);
+        const size_t start = std::min(gcode.find_first_not_of(" \t", line), code);
+        const char   first = start < code ? char(std::toupper(static_cast<unsigned char>(gcode[start]))) : '\0';
+        if (first != 'T' && first != 'M' && first != 'S' && first != 'P') {
+            line = next + 1;
+            continue;
+        }
+        size_t cmd_end = start;
+        while (cmd_end < code && !std::isspace(static_cast<unsigned char>(gcode[cmd_end])))
+            ++cmd_end;
+
+        // The pieces of the line to renumber, as [begin, end) of the digits.
+        std::vector<std::pair<size_t, size_t>> numbers;
+        enum class Kind { None, Temperature, PrintStart } kind = Kind::None;
+        bool extruder_number = false; // a Snapmaker M104/M109 with A: its T is an extruder, which AFC does not map
+        if (first == 'T' && all_digits(gcode, start + 1, cmd_end))
+            numbers.emplace_back(start + 1, cmd_end);
+        else if (cmd_end - start == 4 && (starts_with_nocase(gcode, start, cmd_end, "M104") || starts_with_nocase(gcode, start, cmd_end, "M109")))
+            kind = Kind::Temperature;
+        else if (cmd_end - start == 11 && (starts_with_nocase(gcode, start, cmd_end, "PRINT_START") || starts_with_nocase(gcode, start, cmd_end, "START_PRINT")))
+            kind = Kind::PrintStart;
+        for (size_t p = cmd_end; kind != Kind::None && p < code;) {
+            while (p < code && std::isspace(static_cast<unsigned char>(gcode[p])))
+                ++p;
+            size_t p_end = p;
+            while (p_end < code && !std::isspace(static_cast<unsigned char>(gcode[p_end])))
+                ++p_end;
+            const size_t eq = std::min(gcode.find('=', p), p_end);
+            if (kind == Kind::Temperature) {
+                if (std::toupper(static_cast<unsigned char>(gcode[p])) == 'T' && all_digits(gcode, p + 1, p_end))
+                    numbers.emplace_back(p + 1, p_end);
+                extruder_number |= p < p_end && std::toupper(static_cast<unsigned char>(gcode[p])) == 'A';
+            } else if (eq < p_end) {
+                if (((eq - p == 4 && starts_with_nocase(gcode, p, eq, "TOOL")) || (eq - p == 12 && starts_with_nocase(gcode, p, eq, "INITIAL_TOOL"))) &&
+                    all_digits(gcode, eq + 1, p_end))
+                    numbers.emplace_back(eq + 1, p_end);
+                else if (eq - p > 6 && std::toupper(static_cast<unsigned char>(gcode[p])) == 'T' && starts_with_nocase(gcode, eq - 5, eq, "_TEMP") &&
+                         all_digits(gcode, p + 1, eq - 5))
+                    numbers.emplace_back(p + 1, eq - 5);
+            }
+            p = p_end;
+        }
+        if (!numbers.empty() && !extruder_number) {
+            if (out.empty())
+                out.reserve(gcode.size() + 64);
+            for (const auto &[begin, end] : numbers) {
+                out.append(gcode, copied, begin - copied);
+                out += tool_of(gcode, begin, end);
+                copied = end;
+            }
+        }
+        line = next + 1;
+    }
+    if (copied == 0)
+        return;
+    out.append(gcode, copied, std::string::npos);
+    gcode = std::move(out);
 }
 
 std::string filament_display_name(const std::string &vendor, const std::string &type, const std::string &sub_type)
@@ -1526,7 +1670,7 @@ bool u1_map_table(const Snapshot &snapshot, const std::vector<ProjectFilament> &
             error = "AFC lane " + lane->name + " (T" + std::to_string(f.id) + ") has no toolhead";
             return false;
         }
-        table.emplace_back(f.id, lane->extruder_index);
+        table.emplace_back(f.slot, lane->extruder_index);
     }
     if (table.empty()) {
         error = "The plate uses no filament";

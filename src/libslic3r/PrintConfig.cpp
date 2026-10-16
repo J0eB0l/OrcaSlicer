@@ -4198,6 +4198,17 @@ void PrintConfigDef::init_fff_params()
     def->cli = ConfigOptionDef::nocli;
     def->set_default_value(new ConfigOptionInts { -1 });
 
+    // AFC: written by the filament sync, kept with the project. The sync skips empty lanes, so slot n
+    // is not always lane T(n).
+    def = this->add("filament_afc_tool", coInts);
+    def->label = L("Filament AFC tool");
+    def->tooltip = L("AFC T number of the lane each filament slot was synced from. The G-code changes to that "
+                     "T number for the slot, so it prints from its lane without a lane map. -1 when the slot "
+                     "has no lane: it takes the lowest T number no other slot has.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionInts { -1 });
+
     def = this->add("cooling_tube_retraction", coFloat);
     def->label = L("Cooling tube position");
     def->tooltip = L("Distance of the center-point of the cooling tube from the extruder tip.");

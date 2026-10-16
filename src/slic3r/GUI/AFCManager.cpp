@@ -778,11 +778,13 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
         volumes = result->print_statistics.total_volumes_per_extruder;
 
     const std::vector<std::string> &presets = wxGetApp().preset_bundle->filament_presets;
+    const std::vector<int>          tools   = slot_tool_numbers(*wxGetApp().preset_bundle);
     if (details)
         *details = json::array();
     for (size_t i = 0; i < count; ++i) {
         AFCProtocol::ProjectFilament f;
-        f.id    = int(i);
+        f.id    = i < tools.size() ? tools[i] : int(i);
+        f.slot  = int(i);
         f.color = AFCProtocol::normalize_color(colors->values[i]);
         f.type  = types ? types->get_at(int(i)) : std::string();
         auto v  = volumes.find(i);
@@ -792,6 +794,7 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
         out.push_back(f);
         if (details)
             details->push_back({{"id", f.id},
+                                {"slot", f.slot},
                                 {"color", f.color},
                                 {"type", f.type},
                                 {"grams", f.grams},
@@ -810,10 +813,19 @@ void AFCManager::fill_filament_toolheads(PresetBundle &bundle) const
     const AFCProtocol::Snapshot snap = snapshot();
     if (!snap.present)
         return;
+    const std::vector<int> tools = slot_tool_numbers(bundle);
     for (size_t i = 0; i < bundle.filament_presets.size(); ++i)
         if (bundle.filament_toolhead(i) < 0)
-            if (const AFCProtocol::Lane *lane = snap.lane_for_tool(int(i)); lane != nullptr && lane->extruder_index >= 0)
+            if (const AFCProtocol::Lane *lane = snap.lane_for_tool(tools[i]); lane != nullptr && lane->extruder_index >= 0)
                 bundle.set_filament_toolhead(i, lane->extruder_index);
+}
+
+std::vector<int> AFCManager::slot_tool_numbers(const PresetBundle &bundle)
+{
+    std::vector<int> linked(bundle.filament_presets.size(), -1);
+    for (size_t i = 0; i < linked.size(); ++i)
+        linked[i] = bundle.filament_afc_tool(i);
+    return AFCProtocol::slot_tool_numbers(linked, linked.size());
 }
 
 std::vector<int> AFCManager::mapped_toolheads() const
@@ -829,9 +841,9 @@ std::vector<int> AFCManager::mapped_toolheads() const
         const AFCProtocol::Lane *lane = f.used && f.id >= 0 ? snap.lane_for_tool(f.id) : nullptr;
         if (lane == nullptr || lane->extruder_index < 0)
             continue;
-        if (out.size() <= size_t(f.id))
-            out.resize(size_t(f.id) + 1, -1);
-        out[size_t(f.id)] = lane->extruder_index;
+        if (out.size() <= size_t(f.slot))
+            out.resize(size_t(f.slot) + 1, -1);
+        out[size_t(f.slot)] = lane->extruder_index;
     }
     return out;
 }

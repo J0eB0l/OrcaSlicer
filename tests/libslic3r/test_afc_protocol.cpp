@@ -708,21 +708,21 @@ TEST_CASE("the U1's LAN addresses come from system_info, wired first", "[AFCProt
     CHECK(AFCProtocol::lan_addresses(json{{"network", {{"wlan0", "down"}}}}).empty());
 }
 
-TEST_CASE("the U1 map table pairs each used T(n) with its lane's toolhead", "[AFCProtocol]")
+TEST_CASE("the U1 map table pairs each used slot with the toolhead of its T number's lane", "[AFCProtocol]")
 {
     AFCProtocol::Snapshot s;
     REQUIRE(AFCProtocol::parse_status_endpoint(webhook_fixture(), s));
     std::vector<AFCProtocol::ProjectFilament> f(3);
-    f[0] = {0, "#FF0000", "PLA", 10, true};  // lane1 on extruder
-    f[1] = {1, "#00FF00", "PETG", 0, false}; // not on this plate
-    f[2] = {4, "#0000FF", "PLA", 10, true};  // lane5 on extruder1
+    f[0] = {0, "#FF0000", "PLA", 10, true, 0};  // lane1 on extruder
+    f[1] = {1, "#00FF00", "PETG", 0, false, 1}; // not on this plate
+    f[2] = {4, "#0000FF", "PLA", 10, true, 2};  // slot 2 prints as T4: lane5 on extruder1
 
     std::vector<std::pair<int, int>> table;
     std::string                      error;
     REQUIRE(AFCProtocol::u1_map_table(s, f, table, error));
-    CHECK(table == std::vector<std::pair<int, int>>{{0, 0}, {4, 1}});
+    CHECK(table == std::vector<std::pair<int, int>>{{0, 0}, {2, 1}});
 
-    f.push_back({7, "#FFFFFF", "PLA", 10, true}); // nothing maps T7
+    f.push_back({7, "#FFFFFF", "PLA", 10, true, 3}); // nothing maps T7
     CHECK_FALSE(AFCProtocol::u1_map_table(s, f, table, error));
     CHECK(error == "No AFC lane is mapped to T7");
 
@@ -887,6 +887,76 @@ TEST_CASE("toolheads at print time", "[AFCProtocol]")
     CHECK(AFCProtocol::toolheads_at_print({0, 0, 1}, {-1, 1}) == std::vector<int>{0, 1, 1});
     CHECK(AFCProtocol::toolheads_at_print({-1}, {-1, -1, 2}) == std::vector<int>{-1, -1, 2});
     CHECK(AFCProtocol::toolheads_at_print({0, 1}, {}) == std::vector<int>{0, 1});
+}
+
+TEST_CASE("each slot prints as the AFC T number the sync tied it to", "[AFCProtocol]")
+{
+    CHECK(AFCProtocol::slot_tool_numbers({0, 3, 5}, 3) == std::vector<int>{0, 3, 5});
+    // An unlinked slot takes the lowest free number.
+    CHECK(AFCProtocol::slot_tool_numbers({0, 3, -1, 5}, 4) == std::vector<int>{0, 3, 1, 5});
+    CHECK(AFCProtocol::slot_tool_numbers({-1, -1}, 2) == std::vector<int>{0, 1});
+    CHECK(AFCProtocol::slot_tool_numbers({}, 3) == std::vector<int>{0, 1, 2});
+    // A slot added after the sync, and two slots the sync mapped to one lane.
+    CHECK(AFCProtocol::slot_tool_numbers({2, 4}, 3) == std::vector<int>{2, 4, 0});
+    CHECK(AFCProtocol::slot_tool_numbers({4, 4, -1}, 3) == std::vector<int>{4, 4, 0});
+    CHECK(AFCProtocol::slot_tool_numbers({1, 2, 7}, 2) == std::vector<int>{1, 2});
+
+    CHECK(AFCProtocol::tool_numbers_are_slots({}));
+    CHECK(AFCProtocol::tool_numbers_are_slots({0, 1, 2}));
+    CHECK_FALSE(AFCProtocol::tool_numbers_are_slots({0, 3, 5}));
+}
+
+TEST_CASE("a project's slot numbers are written as their AFC T numbers", "[AFCProtocol]")
+{
+    const std::vector<int> tools{0, 3, 5};
+    auto renumbered = [&tools](std::string gcode) {
+        AFCProtocol::renumber_tools(gcode, tools);
+        return gcode;
+    };
+    CHECK(renumbered("T1\n") == "T3\n");
+    CHECK(renumbered("T2 PURGE_LENGTH=41.6\nG1 E1\n  T0 ; T2 back\n") == "T5 PURGE_LENGTH=41.6\nG1 E1\n  T0 ; T2 back\n");
+    CHECK(renumbered("M104 S220 T1 ; preheat T1 time: 30s\nM109 T2 S230\nm104 s200 t1") ==
+          "M104 S220 T3 ; preheat T1 time: 30s\nM109 T5 S230\nm104 s200 t3");
+    // The U1 reads its own commands by slot.
+    CHECK(renumbered("SM_PRINT_PREEXTRUDE_FILAMENT INDEX=2\n") == "SM_PRINT_PREEXTRUDE_FILAMENT INDEX=2\n");
+    // The U1's start G-code turns its extruders off by number, and AFC does not map a T with A.
+    CHECK(renumbered("M104 S0 T1 A0\nM104 S0 T2 A0\nM104 T1 S140\n") == "M104 S0 T1 A0\nM104 S0 T2 A0\nM104 T3 S140\n");
+    CHECK(renumbered("PRINT_START TOOL_TEMP=220 T0_TEMP=220 T1_TEMP=230 T2_TEMP=260 BED_TEMP=55 TOOL=1\n") ==
+          "PRINT_START TOOL_TEMP=220 T0_TEMP=220 T3_TEMP=230 T5_TEMP=260 BED_TEMP=55 TOOL=3\n");
+    CHECK(renumbered("START_PRINT INITIAL_TOOL=2 EXTRUDER=1\n") == "START_PRINT INITIAL_TOOL=5 EXTRUDER=1\n");
+
+    // What is not a tool number stays as it is.
+    const std::string others = "; T1\nG1 X1 Y1 E1\nTIMELAPSE_START\nM106 P1 S255\nM104 S220\nT1_TEMP=200\n"
+                               "SET_PRINT_PREFERENCES INDEX=1\nPRINT_END TOOL=1\nT10\nT1 X\nM1040 T1\n";
+    std::string        kept   = others;
+    AFCProtocol::renumber_tools(kept, tools);
+    CHECK(kept == others.substr(0, others.find("T1 X")) + "T3 X\nM1040 T1\n");
+    std::string unchanged = "T1\n";
+    AFCProtocol::renumber_tools(unchanged, {});
+    CHECK(unchanged == "T1\n");
+}
+
+TEST_CASE("a lane map's purges read a renumbered G-code's T numbers as their slots", "[AFCProtocol]")
+{
+    AFCProtocol::FlushSettings flush;
+    flush.matrix             = {0, 100, 200, //
+                                100, 0, 300, //
+                                200, 300, 0};
+    flush.filament_diameters = {1.75, 1.75, 1.75};
+
+    // Slots 0, 1 and 2 print as T0, T3 and T5, sliced on one toolhead; the popup put slot 1 on its own.
+    AFCProtocol::PurgeLengths purge({0, 0, 0}, {0, 1, 0}, flush, {0, 3, 5});
+    CHECK(purge.apply("T0") == "T0");
+    CHECK(purge.apply("T3 PURGE_LENGTH=41.6") == "T3");
+    CHECK(purge.apply("T5 PURGE_LENGTH=124.7") == "T5 PURGE_LENGTH=83.2");
+    CHECK(purge.apply("T1 PURGE_LENGTH=9.9") == "T1 PURGE_LENGTH=9.9"); // no slot prints as T1
+    CHECK(purge.apply("T0 PURGE_LENGTH=83.2") == "T0 PURGE_LENGTH=83.2");
+
+    // Two slots on one lane: its T number is the first of them.
+    AFCProtocol::PurgeLengths shared({0, 0, 0}, {0, 0, 0}, flush, {4, 4, 2});
+    CHECK(shared.apply("T4") == "T4");
+    CHECK(shared.apply("T2 PURGE_LENGTH=83.2") == "T2 PURGE_LENGTH=83.2");
+    CHECK(shared.apply("T4 PURGE_LENGTH=124.7") == "T4 PURGE_LENGTH=83.2");
 }
 
 TEST_CASE("the lane map's purge lengths are written into a copy of the G-code", "[AFCProtocol]")

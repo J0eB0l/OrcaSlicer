@@ -210,17 +210,17 @@ void ClearSpoolPressureAdvance(DynamicPrintConfig &config, size_t num_filaments)
     spool->values.assign(std::max<size_t>(num_filaments, 1), -1.);
 }
 
-// AFC: one toolhead per filament slot, -1 = unknown.
+// AFC: one toolhead and one AFC T number per filament slot, -1 = unknown.
 void EnsureFilamentToolheadsAligned(DynamicPrintConfig &config, size_t num_filaments)
 {
-    auto *heads = config.option<ConfigOptionInts>("filament_toolhead", true);
-    heads->values.resize(std::max<size_t>(num_filaments, 1), -1);
+    for (const char *key : {"filament_toolhead", "filament_afc_tool"})
+        config.option<ConfigOptionInts>(key, true)->values.resize(std::max<size_t>(num_filaments, 1), -1);
 }
 
 void ClearFilamentToolheads(DynamicPrintConfig &config, size_t num_filaments)
 {
-    auto *heads = config.option<ConfigOptionInts>("filament_toolhead", true);
-    heads->values.assign(std::max<size_t>(num_filaments, 1), -1);
+    for (const char *key : {"filament_toolhead", "filament_afc_tool"})
+        config.option<ConfigOptionInts>(key, true)->values.assign(std::max<size_t>(num_filaments, 1), -1);
 }
 
 } // namespace
@@ -245,6 +245,8 @@ static std::vector<std::string> s_project_options {
     "spool_pressure_advance",
     // AFC: toolhead each filament slot is fed into
     "filament_toolhead",
+    // AFC: T number of the lane each filament slot was synced from
+    "filament_afc_tool",
     // Mixed filament / local-Z settings
     "mixed_filament_gradient_mode",
     "mixed_filament_height_lower_bound",
@@ -2212,9 +2214,11 @@ void PresetBundle::update_num_filaments(unsigned int to_del_filament_id)
         auto *spool = project_config.option<ConfigOptionFloats>("spool_pressure_advance", true);
         if (spool->values.size() > to_del_filament_id)
             spool->values.erase(spool->values.begin() + to_del_filament_id);
-        auto *heads = project_config.option<ConfigOptionInts>("filament_toolhead", true);
-        if (heads->values.size() > to_del_filament_id)
-            heads->values.erase(heads->values.begin() + to_del_filament_id);
+        for (const char *key : {"filament_toolhead", "filament_afc_tool"}) {
+            auto *ints = project_config.option<ConfigOptionInts>(key, true);
+            if (ints->values.size() > to_del_filament_id)
+                ints->values.erase(ints->values.begin() + to_del_filament_id);
+        }
     }
     EnsureFilamentVolumeTypesAligned(project_config, filament_presets.size());
     EnsureSpoolPressureAdvanceAligned(project_config, filament_presets.size());
@@ -3188,7 +3192,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         // A project saved without synced spools must not keep the previous project's.
         if (!config.has("spool_pressure_advance"))
             ClearSpoolPressureAdvance(this->project_config, this->filament_presets.size());
-        if (!config.has("filament_toolhead"))
+        if (!config.has("filament_toolhead") || !config.has("filament_afc_tool"))
             ClearFilamentToolheads(this->project_config, this->filament_presets.size());
         this->project_config.apply_only(config, s_project_options);
         EnsureFilamentColorFieldsAligned(this->project_config);
@@ -4432,6 +4436,20 @@ int PresetBundle::filament_toolhead(size_t idx) const
 {
     const auto *heads = project_config.option<ConfigOptionInts>("filament_toolhead");
     return heads != nullptr && idx < heads->values.size() ? heads->values[idx] : -1;
+}
+
+void PresetBundle::set_filament_afc_tool(size_t idx, int tool)
+{
+    EnsureFilamentToolheadsAligned(project_config, filament_presets.size());
+    auto *tools = project_config.option<ConfigOptionInts>("filament_afc_tool", true);
+    if (idx < tools->values.size())
+        tools->values[idx] = tool >= 0 ? tool : -1;
+}
+
+int PresetBundle::filament_afc_tool(size_t idx) const
+{
+    const auto *tools = project_config.option<ConfigOptionInts>("filament_afc_tool");
+    return tools != nullptr && idx < tools->values.size() ? tools->values[idx] : -1;
 }
 
 void PresetBundle::clear_filament_toolheads() { ClearFilamentToolheads(project_config, filament_presets.size()); }

@@ -275,7 +275,10 @@ public:
     // AFC: toolhead filament slot idx is fed into (project option "filament_toolhead"), -1 = unknown.
     void                        set_filament_toolhead(size_t idx, int toolhead);
     int                         filament_toolhead(size_t idx) const;
-    // AFC: forgets every slot's toolhead, when another printer is selected.
+    // AFC: T number of the lane filament slot idx was synced from (project option "filament_afc_tool"), -1 = none.
+    void                        set_filament_afc_tool(size_t idx, int tool);
+    int                         filament_afc_tool(size_t idx) const;
+    // AFC: forgets every slot's toolhead and AFC T number, when another printer is selected.
     void                        clear_filament_toolheads();
 
     // Read out the number of extruders from an active printer preset,

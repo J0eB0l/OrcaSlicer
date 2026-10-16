@@ -102,15 +102,23 @@ public:
     // sliced plate uses them. UI thread only.
     std::vector<AFCProtocol::ProjectFilament> project_filaments(nlohmann::json *details = nullptr) const;
 
+    // Whether the printer filaments the slicer lists are AFC's lanes (index = T number). UI thread only.
+    bool lists_lanes() const { return !m_applied_key.empty(); }
+
+    // The AFC T number each of the project's filament slots prints as: the lane the filament
+    // sync took it from (project option filament_afc_tool), else the lowest free one.
+    static std::vector<int> slot_tool_numbers(const PresetBundle &bundle);
+
     // Gives every filament slot the project does not know the toolhead of yet (not synced
-    // from AFC) the toolhead of the lane AFC maps its T(n) to now, when the selected printer
+    // from AFC) the toolhead of the lane AFC maps its T number to now, when the selected printer
     // runs AFC. It sticks with the project like a synced one, so later remaps do not
     // invalidate the slicing (the print popup recomputes PURGE_LENGTH for them). A printer
     // without AFC keeps every slot unknown. UI thread only.
     void fill_filament_toolheads(PresetBundle &bundle) const;
 
-    // The toolhead of the lane AFC maps each T(n) the current plate uses to now, -1 for
-    // the rest (and all of them when AFC has not answered). UI thread only.
+    // By filament slot, the toolhead of the lane AFC maps the T number of each slot the
+    // current plate uses to now, -1 for the rest (and all of them when AFC has not
+    // answered). UI thread only.
     std::vector<int> mapped_toolheads() const;
 
     // Everything the AFC page shows: {"afc": snapshot, "project": {...}, "connected": bool}.

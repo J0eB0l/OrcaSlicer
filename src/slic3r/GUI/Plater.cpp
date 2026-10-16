@@ -9401,8 +9401,9 @@ void Sidebar::show_sync_filament_dialog()
     SyncFilamentColorDialog dlg(this, designFilamentList, machineFilamentList);
     dlg.setHasMixedFilaments(preset_bundle->mixed_filaments.enabled_count() > 0);
     dlg.setMixedFilamentInfos(mixedInfos);
-    // AFC: overwrite keeps slot n on T(n), so a sync never drops the empty lanes' slots.
-    dlg.setKeepEmptySlots(afc_sync);
+    // AFC: overwrite syncs the loaded lanes only, each project slot staying on its lane.
+    if (afc_sync)
+        dlg.setAfcLanes(AFCManager::slot_tool_numbers(*preset_bundle));
     {
         if (wxGetApp().plater()->model().objects.empty()) {
             dlg.setOverwriteMode();
@@ -9437,6 +9438,15 @@ void Sidebar::show_sync_filament_dialog()
                     preset_bundle->set_filament_id_remap(dlgRemap);
             }
         }
+        // AFC: the same count of loaded lanes can still move a slot's lane to another slot.
+        if (afc_sync && effective_size == combo_Size) {
+            const auto& dlgRemap = dlg.getFilamentIdRemap();
+            for (size_t id = 1; id < dlgRemap.size(); ++id)
+                if (dlgRemap[id] != id) {
+                    preset_bundle->set_filament_id_remap(dlgRemap);
+                    break;
+                }
+        }
 
         ConfigOptionStrings* co = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
         ConfigOptionStrings* mco = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors");
@@ -9469,7 +9479,7 @@ void Sidebar::show_sync_filament_dialog()
         int spool_presets_made = 0, spool_presets_updated = 0, presets_shown = 0;
 
         for (size_t i = 0; i < effective_size; ++i) {
-            // AFC: a slot kept for an empty lane is a gray Generic one, so it reads as empty.
+            // AFC: a slot mapped to an empty lane is a gray Generic one, so it reads as empty.
             if (afc_sync && (syncedData[i].m_type.empty() || syncedData[i].m_type == "NONE")) {
                 syncedData[i].m_name  = "Generic " + afc_main_type;
                 syncedData[i].m_type  = afc_main_type;
@@ -9498,6 +9508,8 @@ void Sidebar::show_sync_filament_dialog()
                 ++spool_pa_slots;
             auto head = lane_toolhead.find(int(syncedData[i].m_index));
             preset_bundle->set_filament_toolhead(i, head != lane_toolhead.end() ? head->second : -1);
+            // AFC: the slot prints as its lane's T number.
+            preset_bundle->set_filament_afc_tool(i, afc_sync ? int(syncedData[i].m_index) : -1);
 
             if (co && i < co->values.size()) {
                 wxColour c = getMainColor(syncedData[i].m_color);
@@ -13666,7 +13678,7 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
         this->partplate_list.update_slice_context_to_current_plate(background_process);
         this->preview->update_gcode_result(partplate_list.get_current_slice_result());
     }
-    // AFC: slots not synced from AFC take the toolheads of the lanes AFC maps their T(n) to, on a printer that runs AFC.
+    // AFC: slots not synced from AFC take the toolheads of the lanes AFC maps their T numbers to, on a printer that runs AFC.
     AFCManager::instance().fill_filament_toolheads(*wxGetApp().preset_bundle);
     Print::ApplyStatus invalidated = background_process.apply(this->model, wxGetApp().preset_bundle->full_config());
     notify_filament_compatibility_after_apply();
