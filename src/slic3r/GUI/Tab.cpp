@@ -2266,7 +2266,9 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     }
 
     //Orca: disable purge_in_prime_tower if single_extruder_multi_material is disabled
-    if (opt_key == "single_extruder_multi_material" && m_config->opt_bool("single_extruder_multi_material") == false){
+    // AFC: except on Klipper, where it flushes AFC lane changes on a multi-toolhead printer on the tower.
+    if (opt_key == "single_extruder_multi_material" && m_config->opt_bool("single_extruder_multi_material") == false &&
+        m_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value != gcfKlipper){
         DynamicPrintConfig new_conf = *m_config;
         new_conf.set_key_value("purge_in_prime_tower", new ConfigOptionBool(false));
         m_config_manipulation.apply(m_config, &new_conf);
@@ -5564,7 +5566,9 @@ void TabPrinter::toggle_options()
         }
         toggle_option("extruders_count", !bSEMM);
         toggle_option("manual_filament_change", bSEMM);
-        toggle_option("purge_in_prime_tower", bSEMM && !is_BBL_printer);
+        // AFC: on a multi-toolhead Klipper printer it flushes AFC lane changes on the tower.
+        const bool is_klipper = m_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value == gcfKlipper;
+        toggle_option("purge_in_prime_tower", (bSEMM || is_klipper) && !is_BBL_printer);
     }
     wxString extruder_number;
     long val = 1;

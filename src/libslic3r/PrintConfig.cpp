@@ -5277,7 +5277,8 @@ void PrintConfigDef::init_fff_params()
 
     def = this->add("purge_in_prime_tower", coBool);
     def->label = L("Purge in prime tower");
-    def->tooltip = L("Purge remaining filament into prime tower.");
+    def->tooltip = L("Purge remaining filament into prime tower. On a Klipper printer with several toolheads fed by AFC lanes, "
+                     "a lane change on a toolhead flushes on the prime tower instead of in AFC's poop.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(true));
 

@@ -193,7 +193,8 @@ boost::filesystem::path AFCPrintDialog::gcode_for_lane_map(const boost::filesyst
                                                            const std::vector<int> &mapped, std::string &error)
 {
     error.clear();
-    // Slicing only placed PURGE_LENGTH for a multi-toolhead Klipper printer (see GCode::_do_export).
+    // Slicing only placed PURGE_LENGTH for a multi-toolhead Klipper printer (see GCode::_do_export), or flushed its
+    // lane changes on the prime tower (Print::afc_lane_flush_on_tower).
     const auto *flavor = sliced.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
     const auto *heads  = sliced.option<ConfigOptionInts>("filament_toolhead");
     if (mapped.empty() || flavor == nullptr || flavor->value != gcfKlipper || heads == nullptr ||
@@ -212,7 +213,7 @@ boost::filesystem::path AFCPrintDialog::gcode_for_lane_map(const boost::filesyst
         flush.multiplier = multiplier->value;
     if (const auto *diameters = sliced.option<ConfigOptionFloats>("filament_diameter"))
         flush.filament_diameters = diameters->values;
-    AFCProtocol::PurgeLengths purge(toolheads, std::move(flush));
+    AFCProtocol::PurgeLengths purge(as_sliced, toolheads, std::move(flush));
 
     boost::filesystem::path out = gcode;
     out.replace_extension(".lanes" + gcode.extension().string());

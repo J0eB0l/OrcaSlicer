@@ -50,16 +50,21 @@ struct FlushSettings
 /// print time (the print popup can map a T(n) to a lane on another toolhead
 /// than the slicing assumed). A change to a slot with a known toolhead gets
 /// the lane change flush from the slot that toolhead held, or no PURGE_LENGTH
-/// when it is a tool switch; every other line stays as it is.
+/// when it is a tool switch; every other line stays as it is. A lane change
+/// the slicing made from the same slot without a PURGE_LENGTH stays as it is
+/// too: it was flushed on the prime tower ("Purge in prime tower"), or needed
+/// no flush.
 class PurgeLengths
 {
 public:
-    PurgeLengths(std::vector<int> toolheads, FlushSettings flush);
+    /// `sliced`: filament_toolhead as sliced; `toolheads`: at print time.
+    PurgeLengths(std::vector<int> sliced, std::vector<int> toolheads, FlushSettings flush);
 
     /// `line` (without its newline) as this mapping needs it.
     std::string apply(const std::string &line);
 
 private:
+    ToolheadLoads m_sliced;
     ToolheadLoads m_loads;
     FlushSettings m_flush;
 };

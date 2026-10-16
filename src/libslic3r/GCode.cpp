@@ -1615,7 +1615,9 @@ std::string WipeTowerIntegration::tool_change(GCode& gcodegen, int extruder_id, 
 
                 if (!ignore_sparse) {
                     realign_nominal_toolchange_idx(extruder_id);
+                    gcodegen.m_afc_tower_tool_change = true;
                     gcode += append_tcr2(gcodegen, m_tool_changes[m_layer_idx][m_tool_change_idx++], extruder_id, wipe_tower_z);
+                    gcodegen.m_afc_tower_tool_change = false;
                     m_last_wipe_tower_print_z = wipe_tower_z;
                 }
             }
@@ -3168,6 +3170,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
                            AFCProtocol::ToolheadLoads();
     if (m_start_gcode_filament >= 0)
         m_toolhead_loads.change_to(unsigned(m_start_gcode_filament));
+    m_afc_lane_flush_on_tower = has_wipe_tower && print.afc_lane_flush_on_tower();
+    m_afc_tower_tool_change   = false;
 
     // flush FanMover buffer to avoid modifying the start gcode if it's manual.
     if (!machine_start_gcode.empty() && this->m_fan_mover.get() != nullptr)
@@ -9159,15 +9163,17 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         old_filament_e_feedrate       = 200;
     }
     // AFC: only a lane change on a toolhead flushes, from the lane that toolhead held, and AFC's poop does it
-    // (PURGE_LENGTH on the T command, also in flush_length). A switch to a toolhead that already holds its filament
-    // flushes nothing; the prime tower, when there is one, still primes it.
+    // (PURGE_LENGTH on the T command, also in flush_length), or the prime tower when Purge in prime tower is on and
+    // the tower planned this change. A switch to a toolhead that already holds its filament flushes nothing; the
+    // prime tower, when there is one, still primes it.
     float afc_purge_length = 0.f;
     const int lane_from    = m_toolhead_loads.change_to(extruder_id);
     if (m_toolhead_loads.knows(extruder_id)) {
-        wipe_volume      = lane_from >= 0 ? AFCProtocol::lane_change_flush(m_config.flush_volumes_matrix.values, unsigned(lane_from),
-                                                                           extruder_id, m_config.flush_multiplier) :
-                                            0.f;
-        afc_purge_length = wipe_volume / filament_area;
+        wipe_volume = lane_from >= 0 ? AFCProtocol::lane_change_flush(m_config.flush_volumes_matrix.values, unsigned(lane_from),
+                                                                      extruder_id, m_config.flush_multiplier) :
+                                       0.f;
+        if (!(m_afc_lane_flush_on_tower && m_afc_tower_tool_change))
+            afc_purge_length = wipe_volume / filament_area;
     }
     float wipe_length             = wipe_volume / filament_area;
     int   new_filament_e_feedrate = (int) (60.0 * get_value_at(m_config, m_config.filament_max_volumetric_speed, ConfigFlowDomain::Filament, extruder_id) / filament_area);

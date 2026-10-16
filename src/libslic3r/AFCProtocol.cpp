@@ -975,7 +975,9 @@ std::string with_purge_length(const std::string &gcode, const std::string &prefi
     return gcode;
 }
 
-PurgeLengths::PurgeLengths(std::vector<int> toolheads, FlushSettings flush) : m_loads(std::move(toolheads)), m_flush(std::move(flush)) {}
+PurgeLengths::PurgeLengths(std::vector<int> sliced, std::vector<int> toolheads, FlushSettings flush)
+    : m_sliced(std::move(sliced)), m_loads(std::move(toolheads)), m_flush(std::move(flush))
+{}
 
 std::string PurgeLengths::apply(const std::string &line)
 {
@@ -988,7 +990,8 @@ std::string PurgeLengths::apply(const std::string &line)
     // T and a number, then the end of the line, a parameter or a comment: T5, T5 PURGE_LENGTH=4.2, T5 ; load.
     if (end == start + 1 || (end < line.size() && !std::isspace(static_cast<unsigned char>(line[end])) && line[end] != ';'))
         return line;
-    const unsigned int tool = unsigned(std::stoul(line.substr(start + 1, end - start - 1)));
+    const unsigned int tool        = unsigned(std::stoul(line.substr(start + 1, end - start - 1)));
+    const int          sliced_from = m_sliced.change_to(tool);
     if (!m_loads.knows(tool))
         return line;
 
@@ -996,7 +999,8 @@ std::string PurgeLengths::apply(const std::string &line)
     std::string bare = line;
     const size_t comment = std::min(bare.find(';', end), bare.size());
     const size_t key     = bare.find("PURGE_LENGTH=", end);
-    if (key < comment) {
+    const bool   had     = key < comment;
+    if (had) {
         size_t cut = key;
         while (cut > end && std::isspace(static_cast<unsigned char>(bare[cut - 1])))
             --cut;
@@ -1009,6 +1013,9 @@ std::string PurgeLengths::apply(const std::string &line)
     const int from = m_loads.change_to(tool);
     if (from < 0)
         return bare;
+    // The slicing made this lane change too and gave it no PURGE_LENGTH: the prime tower flushed it, or it needed none.
+    if (!had && from == sliced_from)
+        return line;
     const std::vector<double> &diameters = m_flush.filament_diameters;
     const double diameter = tool < diameters.size() ? diameters[tool] : diameters.empty() ? 1.75 : diameters.back();
     const double area     = 0.78539816339744831 * diameter * diameter; // pi / 4 * d²

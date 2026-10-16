@@ -840,25 +840,50 @@ TEST_CASE("a lane map picked at print time recomputes each tool change's purge",
     flush.multiplier         = 1.0;
     flush.filament_diameters = {1.75, 1.75, 1.75};
 
-    // Sliced with T0 and T1 on one toolhead, the popup put T1 on its own.
-    AFCProtocol::PurgeLengths purge({0, 1, 0}, flush);
+    // Sliced with T0, T1 and T2 on one toolhead, the popup put T1 on its own.
+    AFCProtocol::PurgeLengths purge({0, 0, 0}, {0, 1, 0}, flush);
     CHECK(purge.apply("T0") == "T0");
     CHECK(purge.apply("G1 X10 Y10 E1") == "G1 X10 Y10 E1");
-    CHECK(purge.apply("T1 PURGE_LENGTH=41.6") == "T1");     // now a tool switch
-    CHECK(purge.apply("T2") == "T2 PURGE_LENGTH=83.2");     // lane change from T0
-    CHECK(purge.apply("  T0 ; back") == "  T0 PURGE_LENGTH=83.2 ; back");
-    CHECK(purge.apply("T1") == "T1");                       // extruder1 still holds T1
+    CHECK(purge.apply("T1 PURGE_LENGTH=41.6") == "T1");                   // now a tool switch
+    CHECK(purge.apply("T2 PURGE_LENGTH=124.7") == "T2 PURGE_LENGTH=83.2"); // lane change from T0, not T1
+    CHECK(purge.apply("  T0 PURGE_LENGTH=83.2 ; back") == "  T0 PURGE_LENGTH=83.2 ; back");
+    CHECK(purge.apply("T1 PURGE_LENGTH=41.6") == "T1");                   // extruder1 still holds T1
     CHECK(purge.apply("; T2 in a comment") == "; T2 in a comment");
     CHECK(purge.apply("M104 S210 T2") == "M104 S210 T2");
     CHECK(purge.apply("TIMELAPSE_START") == "TIMELAPSE_START");
     CHECK(purge.apply("T0_TEMP=200") == "T0_TEMP=200");
 
     // A slot with no known toolhead keeps what the slicing wrote.
-    AFCProtocol::PurgeLengths unknown({-1, 0, 0}, flush);
+    AFCProtocol::PurgeLengths unknown({-1, -1, -1}, {-1, 0, 0}, flush);
     CHECK(unknown.apply("T0 PURGE_LENGTH=5.0") == "T0 PURGE_LENGTH=5.0");
     CHECK(unknown.apply("T1") == "T1");
     CHECK(unknown.apply("T2 PURGE_LENGTH=9.9") == "T2 PURGE_LENGTH=124.7");
+}
 
+TEST_CASE("after a lane map, a lane change flushed on the prime tower only gets AFC's purge when it changed", "[AFCProtocol]")
+{
+    AFCProtocol::FlushSettings flush;
+    flush.matrix             = {0, 100, 200, //
+                                100, 0, 300, //
+                                200, 300, 0};
+    flush.filament_diameters = {1.75, 1.75, 1.75};
+
+    // Purge in prime tower: the slicing flushed its lane changes on the tower, so no T carries a PURGE_LENGTH.
+    AFCProtocol::PurgeLengths tower({0, 0, 0}, {0, 1, 0}, flush);
+    CHECK(tower.apply("T0") == "T0");
+    CHECK(tower.apply("T1") == "T1");                      // the tower flushed T0 out, now a tool switch
+    CHECK(tower.apply("T2") == "T2 PURGE_LENGTH=83.2");    // the tower flushed T1, the nozzle holds T0
+    CHECK(tower.apply("  T0 ; back") == "  T0 ; back");    // from T2 either way: the tower has it
+    CHECK(tower.apply("T1") == "T1");
+
+    // A slot without a toolhead when it was sliced had no lane change on the tower.
+    AFCProtocol::PurgeLengths unsynced({0, -1}, {0, 0}, flush);
+    CHECK(unsynced.apply("T0") == "T0");
+    CHECK(unsynced.apply("T1") == "T1 PURGE_LENGTH=41.6");
+}
+
+TEST_CASE("toolheads at print time", "[AFCProtocol]")
+{
     CHECK(AFCProtocol::toolheads_at_print({0, 0, 1}, {-1, 1}) == std::vector<int>{0, 1, 1});
     CHECK(AFCProtocol::toolheads_at_print({-1}, {-1, -1, 2}) == std::vector<int>{-1, -1, 2});
     CHECK(AFCProtocol::toolheads_at_print({0, 1}, {}) == std::vector<int>{0, 1});
@@ -878,7 +903,7 @@ TEST_CASE("the lane map's purge lengths are written into a copy of the G-code", 
     AFCProtocol::FlushSettings flush;
     flush.matrix             = {0, 100, 100, 0};
     flush.filament_diameters = {1.75};
-    AFCProtocol::PurgeLengths purge({0, 1}, flush);
+    AFCProtocol::PurgeLengths purge({0, 0}, {0, 1}, flush);
     std::string error;
     REQUIRE(AFCProtocol::write_gcode_with_purge_lengths(src, dst, purge, error));
     std::stringstream out;

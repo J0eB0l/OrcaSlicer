@@ -649,6 +649,10 @@ private:
     int m_start_gcode_filament = -1;
     // AFC: the lane each toolhead holds, so only a lane change on a toolhead flushes.
     AFCProtocol::ToolheadLoads m_toolhead_loads;
+    // AFC: Print::afc_lane_flush_on_tower() for this export, and whether the tool change being written is one the
+    // tower planned (its lane change flushes there, so the T command gets no PURGE_LENGTH).
+    bool m_afc_lane_flush_on_tower = false;
+    bool m_afc_tower_tool_change   = false;
 
     std::set<unsigned int>                  m_initial_layer_extruders;
     // BBS
