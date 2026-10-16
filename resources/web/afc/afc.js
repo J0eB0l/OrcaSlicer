@@ -606,7 +606,7 @@
       (state.project.sliced ? '' : '<div class="summary"><span class="pill warn">Slice the plate to see grams and which filaments it uses</span></div>') +
       '<div class="map-head"><div>Plate filament</div><div></div><div>AFC lane</div></div>' + rows + '</div>' +
       printOptions() +
-      '<div class="footer"><span class="hint">' + (UPLOAD_ONLY ? 'Applying sets each T number to its lane with SET_MAP now; AFC keeps it until a print ends.' :
+      '<div class="footer"><span class="hint">' + (UPLOAD_ONLY ? 'Applying sets each T number to its lane with SET_MAP now' + (u1Print ? '; AFC keeps it until a print ends.' : '.') :
         'Applying sets each T number to its lane with SET_MAP.') + '</span><div class="grow"></div>' +
       '<button class="btn" id="cancel">Cancel</button>' +
       (UPLOAD_ONLY ? '<button class="btn" id="skip" title="Upload and leave AFC\'s T map as it is">Upload without lanes</button>' :
