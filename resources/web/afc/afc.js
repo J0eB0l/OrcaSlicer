@@ -314,11 +314,13 @@
   }
 
   // ------------------------------------------------------------------ dryer
-  // Typical drying settings; the unit's own ceiling wins (ACE 2 70 °C, AMS 2 Pro 65 °C, AMS HT 85 °C).
+  // Drying spools inside a closed unit, after Bambu Lab's drying table for the AMS HT (PLA and PETG match its
+  // AMS 2 Pro column too). A unit with a lower ceiling (ACE 55 °C, AMS 2 Pro 65 °C) dries at its ceiling instead.
   const DRY_PRESETS = [
-    { m: 'PLA', t: 55, h: 8 }, { m: 'PETG', t: 65, h: 8 }, { m: 'TPU', t: 55, h: 8 }, { m: 'ABS', t: 80, h: 8 },
-    { m: 'ASA', t: 80, h: 8 }, { m: 'PC', t: 80, h: 8 }, { m: 'PA', t: 85, h: 12 }, { m: 'PVA', t: 55, h: 8 },
+    { m: 'PLA', t: 45, h: 12 }, { m: 'PETG', t: 65, h: 12 }, { m: 'TPU', t: 75, h: 18 }, { m: 'ABS', t: 80, h: 8 },
+    { m: 'ASA', t: 80, h: 8 }, { m: 'PC', t: 80, h: 8 }, { m: 'PA', t: 85, h: 12 }, { m: 'PVA', t: 85, h: 18 },
   ];
+  const DRY_ALIASES = { PA6: 'PA', PA11: 'PA', PA12: 'PA', PAHT: 'PA', NYLON: 'PA', PCTG: 'PETG' };
 
   function bambuModel(m) { return ({ ams2: 'AMS 2 Pro', ht: 'AMS HT', ams1: 'AMS', boxed: 'AMS', lite: 'AMS lite' })[m] || m; }
 
@@ -347,10 +349,15 @@
       '<button class="btn" data-dry="' + esc(unit.name) + '"' + (d.online ? '' : ' disabled title="The unit is offline"') + '>Dry</button>';
   }
 
-  function presetFor(material, max) {
+  function dryKey(material) {
     const key = materialKey(material);
+    return DRY_ALIASES[key] || key;
+  }
+
+  function presetFor(material, max) {
+    const key = dryKey(material);
     const p = DRY_PRESETS.find((x) => x.m === key) || DRY_PRESETS[0];
-    return { material: p.m, temp: Math.min(p.t, max), hours: p.h };
+    return { material: p.m, temp: Math.min(p.t, max), hours: p.h, ideal: p.t };
   }
 
   function openDry(name) {
@@ -359,7 +366,7 @@
     const counts = {};
     for (const ln of unit.lanes) {
       const l = laneByName(ln);
-      const k = l && l.has_filament ? materialKey(l.material) : '';
+      const k = l && l.has_filament ? dryKey(l.material) : '';
       if (k) counts[k] = (counts[k] || 0) + 1;
     }
     const common = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || 'PLA';
@@ -374,9 +381,10 @@
     const d = unit.dryer;
     const max = Math.round(d.max_temp || 85);
     const f = dryForm || presetFor('PLA', max);
+    const model = d.model ? (/^ace/i.test(d.model) ? d.model : bambuModel(d.model)) : prettyType(unit.type);
     const lanesHere = unit.lanes.map(laneByName).filter(Boolean);
     const inUse = lanesHere.filter((l) => l.tool_loaded).length;
-    const mats = new Set(lanesHere.filter((l) => l.has_filament).map((l) => materialKey(l.material)).filter(Boolean));
+    const mats = new Set(lanesHere.filter((l) => l.has_filament).map((l) => dryKey(l.material)).filter(Boolean));
     let body;
     if (d.drying) {
       const total = d.duration_s > 0 ? d.duration_s : 0;
@@ -391,7 +399,10 @@
     } else {
       body = '<div class="dry-climate">' + esc(climate(d) || 'No temperature or humidity reading') + '</div>' +
         '<div class="presets">' + DRY_PRESETS.map((p) => '<button class="preset' + (f.material === p.m ? ' cur' : '') + (mats.has(p.m) ? ' here' : '') +
-          '" data-preset="' + p.m + '"><b>' + p.m + '</b><span>' + Math.min(p.t, max) + ' °C · ' + p.h + ' h</span></button>').join('') + '</div>' +
+          '" data-preset="' + p.m + '"' + (p.t > max ? ' title="' + p.m + ' usually dries at ' + p.t + ' °C"' : '') + '><b>' + p.m + '</b>' +
+          '<span' + (p.t > max ? ' class="capped"' : '') + '>' + Math.min(p.t, max) + ' °C · ' + p.h + ' h</span></button>').join('') + '</div>' +
+        (f.material && f.ideal > max ? '<div class="hint dry-cap">The ' + esc(model) + ' dries at ' + max + ' °C at most. ' + esc(f.material) +
+          ' usually dries at ' + f.ideal + ' °C, so it may not dry fully.</div>' : '') +
         '<div class="form">' +
         '<div class="field"><label>Temperature (°C, up to ' + max + ')</label><input id="dry-temp" type="number" min="35" max="' + max + '" step="1" value="' + esc(f.temp) + '"></div>' +
         '<div class="field"><label>Time (hours)</label><input id="dry-hours" type="number" min="0.5" max="48" step="0.5" value="' + esc(f.hours) + '"></div>' +
@@ -399,13 +410,13 @@
         '<span class="hint">AFC skips turning while a lane is loaded to the hub or a toolhead' + (inUse ? ' (' + inUse + ' in a toolhead now)' : '') + '.</span></label>' +
         '</div>' +
         (d.note ? '<div class="pill warn" style="margin-top:10px">' + esc(d.note) + '</div>' : '') +
-        '<div class="hint dry-foot">Preset values are typical; check the spool\'s label.</div>' +
+        '<div class="hint dry-foot">Presets are for drying spools inside the unit; check the spool\'s label.</div>' +
         '<div class="actions"><div class="grow"></div>' +
         '<button class="btn ghost" id="dry-close">Cancel</button><button class="btn primary" id="dry-start">Start drying</button></div>';
     }
     return '<div class="modal-back" id="dry-back"><div class="modal" id="dry-modal" role="dialog">' +
       '<h2><span class="unit-icon">' + esc(unitIcon(unit.type, unit.name)) + '</span>Dry ' + esc(unit.name.replace(/_/g, ' ')) +
-      '<span class="hint">' + esc(d.model ? (/^ace/i.test(d.model) ? d.model : bambuModel(d.model)) : prettyType(unit.type)) + '</span></h2>' + body + '</div></div>';
+      '<span class="hint">' + esc(model) + '</span></h2>' + body + '</div></div>';
   }
 
   function bindDry(unit) {
