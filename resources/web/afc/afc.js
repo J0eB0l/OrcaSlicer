@@ -427,7 +427,6 @@
     const max = Math.round(unit.dryer.max_temp || 85);
     if (unit.dryer.drying) {
       $('dry-stop').onclick = async () => {
-        if (!confirm('Stop drying ' + unit.name.replace(/_/g, ' ') + '?')) return;
         await run(() => call('sw_AFC_Dry', { unit: unit.name, action: 'stop' }), 'Dryer stopped');
       };
       return;
