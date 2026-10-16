@@ -22045,19 +22045,11 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.storage     = dlg.storage();
 
         // AFC: map every project filament to an AFC lane before the print starts. The upload's
-        // PURGE_LENGTH then follows the toolheads those lanes feed. A plain upload gets the
-        // lane screen too, which sets AFC's maps now for when the file is printed.
+        // PURGE_LENGTH then follows the toolheads those lanes feed.
         if (upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint) {
             if (!AFCPrintDialog::map_lanes_before_print(this))
                 return;
             upload_job.upload_data.afc_toolheads = AFCManager::instance().mapped_toolheads();
-        } else if (upload_job.upload_data.post_action == PrintHostPostUploadAction::None) {
-            bool                        upload_lanes = false;
-            AFCProtocol::U1PrintOptions u1_print;
-            if (!AFCPrintDialog::map_lanes_for_upload(this, upload_lanes, u1_print))
-                return;
-            if (upload_lanes)
-                upload_job.upload_data.afc_toolheads = AFCManager::instance().mapped_toolheads();
         }
 
         // Show "Is printer clean" dialog for PrusaConnect - Upload and print.

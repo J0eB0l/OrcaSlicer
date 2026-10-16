@@ -42,10 +42,10 @@ public:
     static bool map_lanes_before_print(wxWindow *parent, bool snapmaker_sends = false,
                                        AFCProtocol::U1PrintOptions *u1_print = nullptr);
 
-    // The mapping step for a file uploaded and started later: the picks are set on
-    // AFC now (a U1 drops them when a print ends). False only when the user
+    // The mapping step for a file uploaded to the U1 and started later: the picks
+    // are set on AFC now and hold until a print ends. False only when the user
     // canceled; `shown` is false when the printer has no AFC. `u1_print` gets the
-    // switches picked there (present only on a U1).
+    // switches picked there.
     static bool map_lanes_for_upload(wxWindow *parent, bool &shown, AFCProtocol::U1PrintOptions &u1_print);
 
     // A copy of `gcode` that sets the U1 switches before its first command, so they
