@@ -4177,6 +4177,38 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionInts { 1 });
     // end Snapmaker: flow-variant support -------------------------------------------------------------
 
+    // AFC: written by the filament sync, kept with the project like the filament colors.
+    def = this->add("spool_pressure_advance", coFloats);
+    def->label = L("Spool pressure advance");
+    def->tooltip = L("Pressure advance saved on the spool synced into each filament slot (AFC flow K). "
+                     "It replaces the filament preset's pressure advance for that slot and turns pressure "
+                     "advance on. -1 keeps the preset's value.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionFloats { -1 });
+
+    // AFC: written by the filament sync from each lane's AFC extruder, kept with the project.
+    def = this->add("filament_toolhead", coInts);
+    def->label = L("Filament toolhead");
+    def->tooltip = L("Toolhead each filament slot is fed into, from AFC (0 = extruder, 1 = extruder1, ...). "
+                     "On a multi-toolhead printer, slots that share a toolhead are lanes of one filament unit: "
+                     "a change between them sends the flushing volume to AFC as PURGE_LENGTH for its poop, "
+                     "while a switch to a toolhead that already holds its filament sends none. -1 when unknown.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionInts { -1 });
+
+    // AFC: written by the filament sync, kept with the project. The sync skips empty lanes, so slot n
+    // is not always lane T(n).
+    def = this->add("filament_afc_tool", coInts);
+    def->label = L("Filament AFC tool");
+    def->tooltip = L("AFC T number of the lane each filament slot was synced from. The G-code changes to that "
+                     "T number for the slot, so it prints from its lane without a lane map. -1 when the slot "
+                     "has no lane: it takes the lowest T number no other slot has.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionInts { -1 });
+
     def = this->add("cooling_tube_retraction", coFloat);
     def->label = L("Cooling tube position");
     def->tooltip = L("Distance of the center-point of the cooling tube from the extruder tip.");
@@ -5256,7 +5288,8 @@ void PrintConfigDef::init_fff_params()
 
     def = this->add("purge_in_prime_tower", coBool);
     def->label = L("Purge in prime tower");
-    def->tooltip = L("Purge remaining filament into prime tower.");
+    def->tooltip = L("Purge remaining filament into prime tower. On a Klipper printer with several toolheads fed by AFC lanes, "
+                     "a lane change on a toolhead flushes on the prime tower instead of in AFC's poop.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(true));
 

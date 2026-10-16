@@ -734,6 +734,10 @@ class Print;
         int m_delta_temperature;
         int m_preheat_steps;
         bool m_disable_m73;
+        // AFC: the T number each filament slot is written as (filament_afc_tool), empty when slot n is T(n)
+        std::vector<int> m_afc_tools;
+        // AFC: in a G-code read back, the slot of each T number, empty when they are the same
+        std::vector<int> m_afc_slot_of;
 #if ENABLE_GCODE_VIEWER_STATISTICS
         std::chrono::time_point<std::chrono::high_resolution_clock> m_start_time;
 #endif // ENABLE_GCODE_VIEWER_STATISTICS

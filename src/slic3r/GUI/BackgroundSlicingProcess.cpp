@@ -36,6 +36,7 @@
 //#include "RemovableDriveManager.hpp"
 
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/AFCPrintDialog.hpp"
 
 namespace Slic3r {
 
@@ -915,7 +916,16 @@ void BackgroundSlicingProcess::prepare_upload()
         } else {
 		    m_print->set_status(95, _utf8(L("Running post-processing scripts")));
 		    std::string error_message;
-		    if (copy_file(m_temp_output_path, source_path.string(), error_message) != SUCCESS)
+		    // AFC: PURGE_LENGTH recomputed for the lanes the print popup picked.
+		    std::string gcode_path = m_temp_output_path;
+		    if (!m_upload_job.upload_data.afc_toolheads.empty()) {
+		        const boost::filesystem::path mapped = GUI::AFCPrintDialog::gcode_for_lane_map(
+		            m_temp_output_path, m_fff_print->full_print_config(), m_upload_job.upload_data.afc_toolheads, error_message);
+		        if (mapped.empty())
+		            throw Slic3r::RuntimeError(error_message);
+		        gcode_path = mapped.string();
+		    }
+		    if (copy_file(gcode_path, source_path.string(), error_message) != SUCCESS)
 		    	throw Slic3r::RuntimeError(_utf8(L("Copying of the temporary G-code to the output G-code failed")));
             m_upload_job.upload_data.upload_path = m_fff_print->print_statistics().finalize_output_path(m_upload_job.upload_data.upload_path.string());
 		    // Orca: skip post-processing scripts for BBL printers as we have run them already in finalize_gcode()

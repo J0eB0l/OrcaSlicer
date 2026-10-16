@@ -1,0 +1,229 @@
+#include "FlutterWebPatch.hpp"
+
+#include <cctype>
+#include <regex>
+
+namespace Slic3r {
+
+namespace {
+
+// Bump when the rewrite changes, so web views fetch the new output instead of
+// an "immutable" copy cached from the previous one.
+const char *const k_query_tag = "afc=3";
+
+bool starts_with(const std::string &s, const char *prefix) { return s.rfind(prefix, 0) == 0; }
+
+bool ends_with(const std::string &s, const char *suffix)
+{
+    const std::string suf(suffix);
+    return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+}
+
+bool patch_index(std::string &html)
+{
+    if (html.find("window.__afcDark") != std::string::npos)
+        return false;
+    const size_t body = html.find("<body>");
+    if (body == std::string::npos)
+        return false;
+    // __afcPO: the U1 print switches picked on the AFC lane screen, for the print popup.
+    html.insert(body + 6, "<script>window.__afcDark=/[?&]dark_mode=1(&|$)/.test(location.search)&&"
+                          "/[?&]path=2(&|$)/.test(location.search);window.__afcPO={};"
+                          "location.search.replace(/[?&]afc_(bed_level|flow_calibrate|time_lapse_camera)=1(?=&|$)/g,"
+                          "function(m,k){window.__afcPO[k]=1;});</script>");
+    // The bootstrap script and the preload of main.js.
+    static const std::regex hashed_js(R"re(((?:flutter_bootstrap|main)\.[0-9a-f]{16,}\.js)")re");
+    html = std::regex_replace(html, hashed_js, std::string("$1?") + k_query_tag + "\"");
+    return true;
+}
+
+bool patch_bootstrap(std::string &js)
+{
+    static const std::string key = "\"mainJsPath\":\"";
+    const size_t at = js.find(key);
+    if (at == std::string::npos)
+        return false;
+    const size_t start = at + key.size();
+    const size_t end   = js.find('"', start);
+    if (end == std::string::npos || js.find('?', start) < end)
+        return false;
+    js.insert(end, std::string("?") + k_query_tag);
+    return true;
+}
+
+// One of the print popup's two maps of print switches, every value `off`:
+//   ["bed_level",<off>,"flow_calibrate",<off>,<name>,<off>]
+// where <name> is a variable holding "time_lapse_camera" (or that literal).
+struct SwitchMap
+{
+    size_t      at{std::string::npos};
+    size_t      length{0};
+    std::string name;
+};
+
+SwitchMap find_switch_map(const std::string &js, const std::string &off)
+{
+    SwitchMap         map;
+    const std::string head = "[\"bed_level\"," + off + ",\"flow_calibrate\"," + off + ",";
+    const size_t      at   = js.find(head);
+    if (at == std::string::npos)
+        return map;
+    size_t                    p       = at + head.size();
+    static const std::string  literal = "\"time_lapse_camera\"";
+    if (js.compare(p, literal.size(), literal) == 0) {
+        p += literal.size();
+    } else {
+        while (p < js.size() && (std::isalnum(static_cast<unsigned char>(js[p])) || js[p] == '_' || js[p] == '$'))
+            ++p;
+        if (p == at + head.size())
+            return map;
+    }
+    const std::string tail = "," + off + "]";
+    if (js.compare(p, tail.size(), tail) != 0)
+        return map;
+    map.name   = js.substr(at + head.size(), p - (at + head.size()));
+    map.at     = at;
+    map.length = p + tail.size() - at;
+    return map;
+}
+
+// Snapmaker's print popup (path=4) starts flow calibration, time-lapse and
+// auto leveling off, in a map it shows (!1 = false) and one it sends (0/1):
+//   A.x(["bed_level",!1,"flow_calibrate",!1,s,!1],...)  A.x(["bed_level",0,"flow_calibrate",0,s,0],...)
+// Both start from window.__afcPO instead, the picks from the AFC lane screen.
+// Both maps or neither, so the popup never shows one value and sends another.
+bool patch_print_switches(std::string &js)
+{
+    const SwitchMap shown = find_switch_map(js, "!1");
+    const SwitchMap sent  = find_switch_map(js, "0");
+    if (shown.at == std::string::npos || sent.at == std::string::npos)
+        return false;
+    auto pick = [](const char *key) { return std::string("(window.__afcPO||{}).") + key; };
+    const std::string shown_js = "[\"bed_level\",!!" + pick("bed_level") + ",\"flow_calibrate\",!!" + pick("flow_calibrate") + "," +
+                                 shown.name + ",!!" + pick("time_lapse_camera") + "]";
+    const std::string sent_js = "[\"bed_level\"," + pick("bed_level") + "?1:0,\"flow_calibrate\"," + pick("flow_calibrate") + "?1:0," +
+                                sent.name + "," + pick("time_lapse_camera") + "?1:0]";
+    // The later one first, so the earlier offset still holds.
+    if (shown.at > sent.at) {
+        js.replace(shown.at, shown.length, shown_js);
+        js.replace(sent.at, sent.length, sent_js);
+    } else {
+        js.replace(sent.at, sent.length, sent_js);
+        js.replace(shown.at, shown.length, shown_js);
+    }
+    return true;
+}
+
+bool is_ident_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$'; }
+
+// The print popup's Send stops on a filament it has no toolhead for, but only
+// when the pick is -1; one never picked at all is null and goes out as
+// "MAP_EXTRUDER=null", which the U1 refuses ("unable to parse null"):
+//   for(o=o.e.c,...;o.t();)if(J.n(o.gR(o).b,-1)){ ... ("Please select filament type" ...
+// A missing pick now stops Send the same way.
+bool patch_unpicked_send(std::string &js)
+{
+    static const std::string text = "\"Please select filament type\"";
+    const size_t             at   = js.find(text);
+    if (at == std::string::npos)
+        return false;
+    const std::string window = js.substr(at, 400);
+    static const std::regex check(R"re(if\(J\.([\w$]+)\(([\w$]+)\.gR\(\2\)\.b,-1\)\))re");
+    std::smatch m;
+    if (!std::regex_search(window, m, check))
+        return false;
+    const std::string pick = m[2].str() + ".gR(" + m[2].str() + ").b";
+    js.replace(at + size_t(m.position(0)), size_t(m.length(0)), "if(" + pick + "==null||J." + m[1].str() + "(" + pick + ",-1))");
+    return true;
+}
+
+// Over the cloud the popup connects to the U1 twice as it opens, and its ask
+// for the toolheads' filaments can go out on the first connection, whose
+// answer is then dropped. After three tries it gives up with
+//   $.h().k(0,B.i,"Failed to update machine filament config, e: "+a3+", error: "+a7,!0,a9)
+// inside updateMachineFilamentConfig:
+//   blB(c2){var s=0,...,m=this,...
+//   var $async$oU=A.i(function(c3,c4){...
+// and the picks stay empty until the popup is reopened. Ask again (the
+// connection that answers has the list by then), up to three times a minute.
+bool patch_filament_list_retry(std::string &js)
+{
+    static const std::string text = "\"Failed to update machine filament config, e: \"";
+    const size_t             at   = js.find(text);
+    if (at == std::string::npos)
+        return false;
+    static const std::regex logged(R"re(^"Failed to update machine filament config, e: "\+[\w$]+\+", error: "\+[\w$]+,!0,[\w$]+\))re");
+    std::smatch m;
+    const std::string after = js.substr(at, 200);
+    if (!std::regex_search(after, m, logged) || js.compare(at + size_t(m.length(0)), 18, "\ntry{(function(v){") == 0)
+        return false;
+    // The method it runs in, and the variable its body calls `this`.
+    static const std::string async_key = "var $async$";
+    const size_t             async_at  = js.rfind(async_key, at);
+    if (async_at == std::string::npos || at - async_at > 6000)
+        return false;
+    size_t name_end = async_at + async_key.size();
+    while (name_end < js.size() && is_ident_char(js[name_end]))
+        ++name_end;
+    const std::string method = js.substr(async_at + async_key.size(), name_end - async_at - async_key.size());
+    const size_t      this_at = js.rfind("=this,", async_at);
+    if (method.empty() || js.compare(name_end, 1, "=") != 0 || this_at == std::string::npos || async_at - this_at > 400)
+        return false;
+    size_t self_from = this_at;
+    while (self_from > 0 && is_ident_char(js[self_from - 1]))
+        --self_from;
+    const std::string self = js.substr(self_from, this_at - self_from);
+    if (self.empty())
+        return false;
+    const std::string retry = "\ntry{(function(v){var w=window,t=Date.now();if(!w.__afcMf||t-w.__afcMf.t>60000)w.__afcMf={t:t,n:0};"
+                              "if(++w.__afcMf.n<=3)setTimeout(function(){try{v." + method + "(\"afcRetry\")}catch(e){}},1000)})(" +
+                              self + ")}catch(e){}";
+    js.insert(at + size_t(m.length(0)), retry);
+    return true;
+}
+
+bool patch_dark_theme(std::string &js)
+{
+    // The start-up "toggleTheme" sets isSystemTheme and isDark to false, e.g.
+    //   q.a=q.b=!1
+    //   A.HL("[ThemeVM] toggleTheme, isDark: false, ...")
+    // The minified names change with every build; the log text does not.
+    static const std::string anchor = "(\"[ThemeVM] toggleTheme";
+    const size_t at = js.find(anchor);
+    if (at == std::string::npos)
+        return false;
+    const size_t from = at > 160 ? at - 160 : 0;
+    const std::string window = js.substr(from, at + 2 - from);
+    static const std::regex assign(R"re(([A-Za-z_$][\w$]*)\.a=\1\.b=!1(\s*[\w$.]+\(")$)re");
+    std::smatch m;
+    if (!std::regex_search(window, m, assign))
+        return false;
+    const std::string var = m[1].str();
+    const std::string replacement = var + ".a=!1," + var + ".b=!!window.__afcDark" + m[2].str();
+    js.replace(from + size_t(m.position(0)), size_t(m.length(0)), replacement);
+    return true;
+}
+
+bool patch_main(std::string &js)
+{
+    const bool dark     = patch_dark_theme(js);
+    const bool switches = patch_print_switches(js);
+    const bool unpicked = patch_unpicked_send(js);
+    const bool retry    = patch_filament_list_retry(js);
+    return dark || switches || unpicked || retry;
+}
+
+} // namespace
+
+bool patch_flutter_web_file(const std::string &basename, std::string &content)
+{
+    if (basename == "index.html")
+        return patch_index(content);
+    if (starts_with(basename, "flutter_bootstrap.") && ends_with(basename, ".js"))
+        return patch_bootstrap(content);
+    if (starts_with(basename, "main.") && ends_with(basename, ".js"))
+        return patch_main(content);
+    return false;
+}
+
+} // namespace Slic3r

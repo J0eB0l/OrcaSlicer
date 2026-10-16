@@ -35,6 +35,7 @@
 #include "NotificationManager.hpp"
 #include "FilamentColorDialog.hpp"
 #include "Plater.hpp"
+#include "AFCManager.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
 #include "Tab.hpp"
@@ -355,6 +356,13 @@ int PresetComboBox::update_ams_color()
         }
     }
     
+
+    // AFC: a lane picked for the slot makes it print as the lane's T number, on the lane's toolhead
+    // (filled in from AFC at the next slicing).
+    if (real_idx >= 0 && machineInfo != nullptr && AFCManager::instance().lists_lanes()) {
+        wxGetApp().preset_bundle->set_filament_afc_tool(size_t(m_filament_idx), real_idx);
+        wxGetApp().preset_bundle->set_filament_toolhead(size_t(m_filament_idx), -1);
+    }
 
     auto& filament_extruder_map = wxGetApp().app_config->get_filament_extruder_map_ref();
     if (real_idx >= 0) {

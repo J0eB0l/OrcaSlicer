@@ -12,6 +12,7 @@
 #include <libslic3r/enum_bitmask.hpp>
 #include "Http.hpp"
 #include <map>
+#include <vector>
 #include "nlohmann/json.hpp"
 
 class wxArrayString;
@@ -42,6 +43,10 @@ struct PrintHostUpload
 
     // Some extended parameters for different upload methods.
     std::map<std::string, std::string> extended_info;
+
+    // AFC: toolhead of each T(n)'s lane as the print popup left AFC's map (-1 = as sliced),
+    // so the upload's PURGE_LENGTH follows it. Empty = upload the G-code as sliced.
+    std::vector<int> afc_toolheads;
 };
 
 class PrintHost
@@ -100,6 +105,14 @@ public:
     virtual void async_subscribe_machine_info(const std::string& hash, std::function<void(const nlohmann::json&)>) {}
 
     virtual void async_send_gcodes(const std::vector<std::string>& scripts, std::function<void(const nlohmann::json&)>) {}
+
+    // Generic Moonraker JSON-RPC call (e.g. "printer.afc.status"). The callback gets
+    // {"data": result} or {"error": ...}; hosts without JSON-RPC answer an error at once.
+    virtual void async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback)
+    {
+        if (callback)
+            callback(nlohmann::json{{"error", "unsupported"}});
+    }
 
     virtual void async_start_print_job(const std::string& filename, std::function<void(const nlohmann::json&)>) {}
 

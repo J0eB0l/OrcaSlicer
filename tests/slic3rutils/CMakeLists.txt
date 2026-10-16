@@ -98,3 +98,17 @@ target_link_libraries(${_FILAMENT_SORT_TEST_NAME}_tests PRIVATE
     ${wxWidgets_LIBRARIES})
 set_property(TARGET ${_FILAMENT_SORT_TEST_NAME}_tests PROPERTY FOLDER "tests")
 catch_discover_tests(${_FILAMENT_SORT_TEST_NAME}_tests TEST_PREFIX "${_FILAMENT_SORT_TEST_NAME}: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
+
+set(_FLUTTER_WEB_PATCH_TEST_NAME flutter_web_patch)
+# Reads the bundled Snapmaker page, so an update that moves the patched code fails here.
+set(_FLUTTER_WEB_DIR ${PROJECT_SOURCE_DIR}/resources/web/flutter_web)
+file(TO_CMAKE_PATH "${_FLUTTER_WEB_DIR}" _FLUTTER_WEB_DIR)
+add_executable(${_FLUTTER_WEB_PATCH_TEST_NAME}_tests
+    FlutterWebPatch_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/slic3r/Utils/FlutterWebPatch.cpp)
+target_compile_definitions(${_FLUTTER_WEB_PATCH_TEST_NAME}_tests PRIVATE
+    "FLUTTER_WEB_DIR=R\"(${_FLUTTER_WEB_DIR})\"")
+target_include_directories(${_FLUTTER_WEB_PATCH_TEST_NAME}_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(${_FLUTTER_WEB_PATCH_TEST_NAME}_tests PRIVATE Catch2::Catch2WithMain)
+set_property(TARGET ${_FLUTTER_WEB_PATCH_TEST_NAME}_tests PROPERTY FOLDER "tests")
+catch_discover_tests(${_FLUTTER_WEB_PATCH_TEST_NAME}_tests TEST_PREFIX "${_FLUTTER_WEB_PATCH_TEST_NAME}: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})

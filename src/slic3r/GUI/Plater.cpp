@@ -200,6 +200,9 @@
 #include "StepMeshDialog.hpp"
 #include "CloneDialog.hpp"
 #include "WebPreprintDialog.hpp"
+#include "AFCManager.hpp"
+#include "AFCPrintDialog.hpp"
+#include "libslic3r/AFCToolheads.hpp"
 
 #include "filamentsync/SyncConfirmDialog.hpp"
 #include "filamentsync/SyncFilamentColorDialog.hpp"
@@ -694,30 +697,34 @@ Preset* resolve_filament_preset(PresetBundle* preset_bundle,
         return s;
     };
 
-    for (auto& preset : preset_bundle->filaments) {
-        if (!preset.is_compatible || !preset.is_system)
-            continue;
-
-        std::string base = extract_base_filament_name(preset.name);
-        if (to_lower(base) == to_lower(filament_name)) {
-            return &preset;
-        }
-    }
-
-    const std::string generic_prefix = "Generic ";
-    std::string generic_base = generic_prefix + filament_type;
-    for (auto& preset : preset_bundle->filaments) {
-        if (!preset.is_compatible || !preset.is_system)
-            continue;
-
-        std::string base = extract_base_filament_name(preset.name);
-        std::string type = preset.config.opt_string("filament_type", static_cast<unsigned int>(0));
-
-        if ((to_lower(type) == to_lower(filament_type)) && 
-                (to_lower(base) == to_lower(generic_base))) {
-            return &preset;
-        }
-    }
+    // System presets first, then the user's own: a custom Klipper printer (AFC on a
+    // Voron, say) often has no compatible system filaments, only presets saved for it.
+    const std::string generic_base = "Generic " + filament_type;
+    auto find = [&](bool system, auto &&matches, bool visible_only = false) -> Preset * {
+        for (auto &preset : preset_bundle->filaments)
+            if (preset.is_compatible && !preset.is_default && preset.is_system == system && (preset.is_visible || !visible_only) &&
+                matches(preset))
+                return &preset;
+        return nullptr;
+    };
+    auto same_name = [&](const Preset &preset) { return to_lower(extract_base_filament_name(preset.name)) == to_lower(filament_name); };
+    auto same_type = [&](const Preset &preset) {
+        return !filament_type.empty() &&
+               to_lower(preset.config.opt_string("filament_type", static_cast<unsigned int>(0))) == to_lower(filament_type);
+    };
+    auto generic_of_type = [&](const Preset &preset) {
+        return same_type(preset) && to_lower(extract_base_filament_name(preset.name)) == to_lower(generic_base);
+    };
+    for (bool system : {true, false})
+        if (Preset *preset = find(system, same_name))
+            return preset;
+    for (bool system : {true, false})
+        if (Preset *preset = find(system, generic_of_type))
+            return preset;
+    // Last resort: any preset of the right material beats keeping the slot's old one.
+    for (bool system : {true, false})
+        if (Preset *preset = find(system, same_type, true))
+            return preset;
 
     return nullptr;
 }
@@ -9279,7 +9286,15 @@ void Sidebar::show_sync_filament_dialog()
 
     std::shared_ptr<PrintHost> host = nullptr;
     wxGetApp().get_connect_host(host);
-    
+
+    // AFC: any printer whose Klipper runs AFC syncs one slot per AFC T(n), read fresh.
+    bool afc_sync = false;
+    if (auto afc_host = AFCManager::afc_host(); afc_host && wxGetApp().preset_bundle) {
+        wxBusyCursor busy;
+        if (AFCManager::instance().refresh_blocking(afc_host, 4000))
+            afc_sync = AFCManager::instance().reapply_machine_filaments(*wxGetApp().preset_bundle);
+    }
+
     MachineObject* device_machine = nullptr;
     {
         Slic3r::DeviceManager* dev = wxGetApp().getDeviceManager();
@@ -9291,7 +9306,7 @@ void Sidebar::show_sync_filament_dialog()
         }
     }
 
-    if (!host && !device_machine) {
+    if (!afc_sync && !host && !device_machine) {
         SyncRichConfirmDialog dlg(this,
             _L("No printer is connected. Please connect your U1 from the Device page before syncing."),
             wxYES_NO);
@@ -9303,7 +9318,7 @@ void Sidebar::show_sync_filament_dialog()
         return;
     }
 
-    {
+    if (!afc_sync) {
         static const std::set<std::string> white_list_machine_types = {
             "Snapmaker U1"
         };
@@ -9386,6 +9401,9 @@ void Sidebar::show_sync_filament_dialog()
     SyncFilamentColorDialog dlg(this, designFilamentList, machineFilamentList);
     dlg.setHasMixedFilaments(preset_bundle->mixed_filaments.enabled_count() > 0);
     dlg.setMixedFilamentInfos(mixedInfos);
+    // AFC: overwrite syncs the loaded lanes only, each project slot staying on its lane.
+    if (afc_sync)
+        dlg.setAfcLanes(AFCManager::slot_tool_numbers(*preset_bundle));
     {
         if (wxGetApp().plater()->model().objects.empty()) {
             dlg.setOverwriteMode();
@@ -9403,9 +9421,11 @@ void Sidebar::show_sync_filament_dialog()
 
         size_t combo_Size = p->combos_filament.size();
         if (effective_size != combo_Size) {
+            // Overwrite deletes the mixed filaments, so they do not count against the limit.
+            const size_t total_after = dlg.shouldDeleteMixedFilaments() ? effective_size :
+                                                                          preset_bundle->mixed_filaments.total_filaments(effective_size);
             if (effective_size > combo_Size &&
-                    (effective_size > MAXIMUM_EXTRUDER_NUMBER ||
-                        preset_bundle->mixed_filaments.total_filaments(effective_size) >= MAXIMUM_FILAMENT_NUMBER)) {
+                    (effective_size > MAXIMUM_EXTRUDER_NUMBER || total_after >= MAXIMUM_FILAMENT_NUMBER)) {
                 effective_size = combo_Size;
             }
             if (effective_size != combo_Size) {
@@ -9418,16 +9438,78 @@ void Sidebar::show_sync_filament_dialog()
                     preset_bundle->set_filament_id_remap(dlgRemap);
             }
         }
+        // AFC: the same count of loaded lanes can still move a slot's lane to another slot.
+        if (afc_sync && effective_size == combo_Size) {
+            const auto& dlgRemap = dlg.getFilamentIdRemap();
+            for (size_t id = 1; id < dlgRemap.size(); ++id)
+                if (dlgRemap[id] != id) {
+                    preset_bundle->set_filament_id_remap(dlgRemap);
+                    break;
+                }
+        }
 
         ConfigOptionStrings* co = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
         ConfigOptionStrings* mco = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors");
         ConfigOptionInts*    cmo = preset_bundle->project_config.option<ConfigOptionInts>("filament_colour_mode");
 
-        for (size_t i = 0; i < effective_size; ++i) {
-            Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type);
-            if (matched) {
-                preset_bundle->set_filament_preset(i, matched->name);
+        // AFC: the pressure advance saved on each lane's spool, by the T(n) the slot was synced from.
+        std::map<int, double> spool_flow_k;
+        // AFC: the toolhead each T(n)'s lane feeds, so a slicing knows which slots are lanes of one toolhead.
+        std::map<int, int> lane_toolhead;
+        // AFC: the material most loaded lanes carry, for the gray slots of empty lanes.
+        std::string afc_main_type = "PLA";
+        if (afc_sync) {
+            std::map<std::string, int> type_count;
+            for (const AFCProtocol::ToolSlot &slot : AFCProtocol::tool_slots(AFCManager::instance().snapshot())) {
+                spool_flow_k[slot.tool] = slot.has_filament ? slot.flow_k : -1.;
+                lane_toolhead[slot.tool] = slot.mapped ? slot.extruder_index : -1;
+                if (slot.has_filament && slot.type != "NONE")
+                    ++type_count[slot.type];
+                BOOST_LOG_TRIVIAL(warning) << "AFC sync: T" << slot.tool << " lane " << slot.lane << (slot.has_filament ? "" : " (empty)")
+                                           << " " << slot.vendor << " " << slot.type << " flow K " << slot.flow_k;
             }
+            int most = 0;
+            for (const auto &[type, count] : type_count)
+                if (count > most) {
+                    most          = count;
+                    afc_main_type = type;
+                }
+        }
+        int spool_pa_slots = 0;
+        int spool_presets_made = 0, spool_presets_updated = 0, presets_shown = 0;
+
+        for (size_t i = 0; i < effective_size; ++i) {
+            // AFC: a slot mapped to an empty lane is a gray Generic one, so it reads as empty.
+            if (afc_sync && (syncedData[i].m_type.empty() || syncedData[i].m_type == "NONE")) {
+                syncedData[i].m_name  = "Generic " + afc_main_type;
+                syncedData[i].m_type  = afc_main_type;
+                syncedData[i].m_color = FilamentColor::FromColors({"#808080"}, FilamentColorMode::Segment);
+            }
+            std::string preset_name;
+            if (Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type))
+                preset_name = matched->name;
+            // AFC: the spool's own preset (vendor and filament name), made from the match above when it has none yet.
+            if (afc_sync) {
+                const AFCManager::SpoolPreset spool =
+                    AFCManager::instance().spool_filament_preset(*preset_bundle, int(syncedData[i].m_index), preset_name);
+                if (!spool.name.empty())
+                    preset_name = spool.name;
+                spool_presets_made += spool.created;
+                spool_presets_updated += spool.updated;
+                presets_shown += AFCManager::instance().show_filament_preset(*preset_bundle, preset_name);
+            }
+            if (!preset_name.empty()) {
+                preset_bundle->set_filament_preset(i, preset_name);
+            }
+            // A sync replaces the slot's spool, so a K from an earlier sync never stays behind.
+            auto k = spool_flow_k.find(int(syncedData[i].m_index));
+            preset_bundle->set_spool_pressure_advance(i, k != spool_flow_k.end() ? k->second : -1.);
+            if (preset_bundle->spool_pressure_advance(i) >= 0)
+                ++spool_pa_slots;
+            auto head = lane_toolhead.find(int(syncedData[i].m_index));
+            preset_bundle->set_filament_toolhead(i, head != lane_toolhead.end() ? head->second : -1);
+            // AFC: the slot prints as its lane's T number.
+            preset_bundle->set_filament_afc_tool(i, afc_sync ? int(syncedData[i].m_index) : -1);
 
             if (co && i < co->values.size()) {
                 wxColour c = getMainColor(syncedData[i].m_color);
@@ -9454,6 +9536,10 @@ void Sidebar::show_sync_filament_dialog()
         }
 
         const size_t num_filaments = effective_size;
+        // New spool presets go into the filament tab's list too.
+        if (spool_presets_made > 0 || spool_presets_updated > 0 || presets_shown > 0)
+            if (Tab* tab = wxGetApp().get_tab(Preset::TYPE_FILAMENT))
+                tab->update_tab_ui();
         wxGetApp().plater()->on_filaments_change(num_filaments);
 
         wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
@@ -9468,10 +9554,17 @@ void Sidebar::show_sync_filament_dialog()
             auto_calc_flushing_volumes(i);
         }
 
+        std::string synced = _u8L("Filament types and colors have been successfully synced from the printer.");
+        if (spool_pa_slots > 0)
+            synced += " " + into_u8(wxString::Format(_L("%d of them print with the pressure advance saved on their spool."), spool_pa_slots));
+        if (spool_presets_made > 0)
+            synced += " " + into_u8(wxString::Format(_L("Made %d filament presets from spool data."), spool_presets_made));
+        if (spool_presets_updated > 0)
+            synced += " " + into_u8(wxString::Format(_L("Updated %d filament presets from spool data."), spool_presets_updated));
         wxGetApp().plater()->get_notification_manager()->push_notification(
             NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::RegularNotificationLevel,
-            _u8L("Filament types and colors have been successfully synced from the printer."));
+            synced);
     }
 }
 
@@ -10167,6 +10260,8 @@ struct Plater::priv
     bool m_slice_all{false};
     bool m_is_slicing {false};
     bool m_is_publishing {false};
+    // AFC: the rest of a send, run once the plate is sliced again for the lanes picked (afc_reslice_for_lanes).
+    std::function<void()> m_afc_after_reslice;
     int m_is_RightClickInLeftUI{-1};
     int m_cur_slice_plate;
     //BBS: m_slice_all in .gcode.3mf file case, set true when slice all
@@ -10481,6 +10576,7 @@ struct Plater::priv
     void on_slicing_update(SlicingStatusEvent&);
     void on_slicing_completed(wxCommandEvent&);
     void on_process_completed(SlicingProcessCompletedEvent&);
+    bool afc_reslice_for_lanes(std::function<void()> resume);
     void on_export_began(wxCommandEvent&);
     void on_export_finished(wxCommandEvent&);
     void on_slicing_began();
@@ -13582,6 +13678,8 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
         this->partplate_list.update_slice_context_to_current_plate(background_process);
         this->preview->update_gcode_result(partplate_list.get_current_slice_result());
     }
+    // AFC: slots not synced from AFC take the toolheads of the lanes AFC maps their T numbers to, on a printer that runs AFC.
+    AFCManager::instance().fill_filament_toolheads(*wxGetApp().preset_bundle);
     Print::ApplyStatus invalidated = background_process.apply(this->model, wxGetApp().preset_bundle->full_config());
     notify_filament_compatibility_after_apply();
 
@@ -15317,6 +15415,9 @@ bool Plater::priv::warnings_dialog()
 void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 {
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": enter, m_ignore_event %1%, status %2%")%m_ignore_event %evt.status();
+    // AFC: a send waiting on this slice goes on only when it succeeds, and never with a later one.
+    std::function<void()> afc_resume = std::move(m_afc_after_reslice);
+    m_afc_after_reslice = nullptr;
     //BBS:ignore cancel event for some special case
     if (m_ignore_event)
     {
@@ -15538,6 +15639,8 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             }
         }
         q->SetDropTarget(new PlaterDropTarget(*main_frame, *q));
+        if (afc_resume && !has_error && !evt.cancelled() && evt.success())
+            q->CallAfter(afc_resume);
     }
     else
     {
@@ -15569,6 +15672,40 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         }
     }
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", exit.");
+}
+
+// AFC: with Purge in prime tower the tower flushes the lane changes the plate was sliced for. When the lanes picked
+// before a print put a T(n) on another toolhead, the plate is sliced again for them (filament_toolhead) and `resume`
+// sends it once that is done, so the tower flushes those lane changes too. False when no new slice is needed and
+// the caller sends right away.
+bool Plater::priv::afc_reslice_for_lanes(std::function<void()> resume)
+{
+    PartPlate   *plate = partplate_list.get_curr_plate();
+    const Print *print = plate != nullptr ? plate->fff_print() : nullptr;
+    if (print == nullptr || !print->afc_lane_flush_on_tower())
+        return false;
+    const std::vector<int> &sliced = print->config().filament_toolhead.values;
+    const std::vector<int>  heads  = AFCProtocol::toolheads_at_print(sliced, AFCManager::instance().mapped_toolheads());
+    std::vector<int>        as_sliced = sliced;
+    as_sliced.resize(heads.size(), -1);
+    if (heads == as_sliced)
+        return false;
+
+    PresetBundle &bundle = *wxGetApp().preset_bundle;
+    for (size_t i = 0; i < heads.size(); ++i)
+        if (heads[i] >= 0)
+            bundle.set_filament_toolhead(i, heads[i]);
+    BOOST_LOG_TRIVIAL(warning) << "AFC print: slicing again for the toolheads of the lanes picked";
+    notification_manager->push_notification(NotificationType::CustomNotification,
+                                            NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                            _u8L("Slicing again for the lanes picked, so the prime tower flushes their lane changes. "
+                                                 "It goes to the printer when that is done."));
+    m_afc_after_reslice = std::move(resume);
+    if (!q->reslice() || !background_process.running()) {
+        m_afc_after_reslice = nullptr;
+        show_error(q, _L("The plate could not be sliced again for the lanes picked, so it was not sent."));
+    }
+    return true;
 }
 
 void Plater::priv::on_action_add(SimpleEvent&)
@@ -21700,8 +21837,14 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         std::string printer_model = printer_model_opt->value;
         is_snapmaker_u1           = boost::icontains(printer_model, "Snapmaker") && boost::icontains(printer_model, "U1");
     }
+    // AFC: a printer with a print host of its own (Klipper's Moonraker, OctoPrint) is sent to
+    // there. Snapmaker's print popup only reaches the printer its device page connected, so
+    // once a U1 had been connected no other printer could be sent to.
+    const auto *host_type = printer_config.option<ConfigOptionEnum<PrintHostType>>("host_type");
+    const bool  own_host  = !is_snapmaker_u1 && host_type != nullptr && host_type->value != htMoonRaker_mqtt &&
+                           printer_config.has("print_host") && !printer_config.opt_string("print_host").empty();
 
-    if (wxGetApp().app_config->get("use_new_connect") == "true" || is_snapmaker_u1) {
+    if ((wxGetApp().app_config->get("use_new_connect") == "true" && !own_host) || is_snapmaker_u1) {
         // firstly upload and open upload download dialog,
         // get default name       
         // Obtain default output path
@@ -21751,19 +21894,107 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.storage     = dlg.storage();
 
 
-        WebPreprintDialog* dialog = new WebPreprintDialog();
-        dialog->set_swtich_to_device(dlg.switch_to_device_tab());
-        dialog->set_send_page(dlg.post_action() == PrintHostPostUploadAction::None);
-        dialog->set_gcode_file_name(upload_job.upload_data.source_path.string());
-        dialog->set_display_file_name(upload_job.upload_data.upload_path.string());
-        bool res = dialog->run();
+        const fs::path                  upload_path = upload_job.upload_data.upload_path;
+        const PrintHostPostUploadAction post_action = dlg.post_action();
+        const bool                      to_device   = dlg.switch_to_device_tab();
 
-        if (dialog->is_finish()) {
-            wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
-        }
+        // AFC: an upload without a print gets the lane screen too, which sets AFC's maps
+        // now (they hold until a print ends). Its U1 switches go into the file, since the
+        // U1 clears them after every print, and the slicer stores the file on the U1.
+        bool                        upload_lanes = false;
+        AFCProtocol::U1PrintOptions upload_options;
+        if (is_snapmaker_u1 && post_action == PrintHostPostUploadAction::None &&
+            !AFCPrintDialog::map_lanes_for_upload(this, upload_lanes, upload_options))
+            return;
 
-        delete dialog;
+        // AFC: map every project filament to an AFC lane before the Snapmaker
+        // print dialog, which only knows the four toolheads. The U1 print
+        // switches picked there open Snapmaker's dialog already set.
+        AFCProtocol::U1PrintOptions afc_u1_print;
+        const bool                  print_lanes = post_action != PrintHostPostUploadAction::None;
+        if (print_lanes && !AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print))
+            return;
 
+        // Sends the plate's G-code as it is once the lanes are picked: now, or after the plate is sliced again for them.
+        auto send = [this, source_path = upload_job.upload_data.source_path, upload_path, post_action, to_device, upload_lanes,
+                     upload_options, print_lanes, afc_u1_print]() {
+            fs::path source = source_path;
+            // AFC: the lanes picked on the lane screen can put a T(n) on another toolhead than the
+            // plate was sliced for, so the file's PURGE_LENGTH follows them.
+            if (upload_lanes || print_lanes) {
+                PartPlate *plate = get_partplate_list().get_curr_plate();
+                if (plate != nullptr && plate->fff_print() != nullptr) {
+                    std::string    error;
+                    const fs::path mapped = AFCPrintDialog::gcode_for_lane_map(source, plate->fff_print()->full_print_config(),
+                                                                               AFCManager::instance().mapped_toolheads(), error);
+                    if (mapped.empty()) {
+                        show_error(this, error);
+                        return;
+                    }
+                    source = mapped;
+                }
+            }
+
+            if (upload_lanes) {
+                std::string error;
+                if (upload_options.present) {
+                    const fs::path with_options = AFCPrintDialog::gcode_with_print_options(source, upload_options, error);
+                    if (with_options.empty()) {
+                        show_error(this, error);
+                        return;
+                    }
+                    source = with_options;
+                }
+                switch (AFCPrintDialog::upload_u1_file(this, source, upload_path, error)) {
+                case AFCPrintDialog::U1Send::Sent:
+                    get_notification_manager()->push_notification(NotificationType::CustomNotification,
+                                                                  NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                                                  _u8L("The file was uploaded to the printer."));
+                    if (to_device)
+                        wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+                    return;
+                case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
+                case AFCPrintDialog::U1Send::Canceled: return;
+                case AFCPrintDialog::U1Send::NotSent: break; // Snapmaker's popup below sends the same file
+                }
+            }
+
+            // The lane screen already holds the U1's switches, so it sends the print itself.
+            // Snapmaker's popup only takes over when nothing reached the printer (no LAN
+            // path to the U1, older firmware).
+            if (afc_u1_print.present && post_action == PrintHostPostUploadAction::StartPrint) {
+                std::string error;
+                switch (AFCPrintDialog::send_u1_print(this, source, upload_path, afc_u1_print, error)) {
+                case AFCPrintDialog::U1Send::Sent:
+                    get_notification_manager()->push_notification(NotificationType::CustomNotification,
+                                                                  NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                                                  _u8L("The print was sent to the printer."));
+                    if (to_device)
+                        wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+                    return;
+                case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
+                case AFCPrintDialog::U1Send::Canceled: return;
+                case AFCPrintDialog::U1Send::NotSent: break;
+                }
+            }
+
+            WebPreprintDialog* dialog = new WebPreprintDialog();
+            dialog->set_url_query(AFCPrintDialog::preprint_query(afc_u1_print));
+            dialog->set_swtich_to_device(to_device);
+            dialog->set_send_page(post_action == PrintHostPostUploadAction::None);
+            dialog->set_gcode_file_name(source.string());
+            dialog->set_display_file_name(upload_path.string());
+            dialog->run();
+
+            if (dialog->is_finish()) {
+                wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+            }
+
+            delete dialog;
+        };
+        // AFC: with Purge in prime tower, lanes picked on another toolhead are sliced for first.
+        if (!(upload_lanes || print_lanes) || !p->afc_reslice_for_lanes(send))
+            send();
         return;
     }
     else {
@@ -21825,6 +22056,14 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.group       = dlg.group();
         upload_job.upload_data.storage     = dlg.storage();
 
+        // AFC: map every project filament to an AFC lane before the print starts. The upload's
+        // PURGE_LENGTH then follows the toolheads those lanes feed.
+        if (upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint) {
+            if (!AFCPrintDialog::map_lanes_before_print(this))
+                return;
+            upload_job.upload_data.afc_toolheads = AFCManager::instance().mapped_toolheads();
+        }
+
         // Show "Is printer clean" dialog for PrusaConnect - Upload and print.
         if (std::string(upload_job.printhost->get_name()) == "PrusaConnect" && upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint) {
             GUI::MessageDialog dlg(nullptr, _L("Is the printer ready? Is the print sheet in place, empty and clean?"), _L("Upload and Print"), wxOK | wxCANCEL);
@@ -21832,21 +22071,27 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
                 return;
         }
 
-        if (use_3mf) {
-            // Process gcode
-            const int result = send_gcode(plate_idx, nullptr);
+        // Uploads the plate as it is: now, or after it is sliced again for the lanes picked.
+        auto job  = std::make_shared<PrintHostJob>(std::move(upload_job));
+        auto send = [this, job, plate_idx, use_3mf]() {
+            if (use_3mf) {
+                // Process gcode
+                const int result = send_gcode(plate_idx, nullptr);
 
-            if (result < 0) {
-                wxString msg = _L("Abnormal print file data. Please slice again");
-                show_error(this, msg, false);
-                return;
+                if (result < 0) {
+                    wxString msg = _L("Abnormal print file data. Please slice again");
+                    show_error(this, msg, false);
+                    return;
+                }
+
+                job->upload_data.source_path = p->m_print_job_data._3mf_path;
             }
 
-            upload_job.upload_data.source_path = p->m_print_job_data._3mf_path;
-
-        }
-
-        p->export_gcode(fs::path(), false, std::move(upload_job));
+            p->export_gcode(fs::path(), false, std::move(*job));
+        };
+        // AFC: with Purge in prime tower, lanes picked on another toolhead are sliced for first.
+        if (job->upload_data.afc_toolheads.empty() || !p->afc_reslice_for_lanes(send))
+            send();
     }
 }
 int Plater::send_gcode(int plate_idx, Export3mfProgressFn proFn)
