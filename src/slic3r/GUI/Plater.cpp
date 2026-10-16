@@ -202,6 +202,7 @@
 #include "WebPreprintDialog.hpp"
 #include "AFCManager.hpp"
 #include "AFCPrintDialog.hpp"
+#include "libslic3r/AFCToolheads.hpp"
 
 #include "filamentsync/SyncConfirmDialog.hpp"
 #include "filamentsync/SyncFilamentColorDialog.hpp"
@@ -10247,6 +10248,8 @@ struct Plater::priv
     bool m_slice_all{false};
     bool m_is_slicing {false};
     bool m_is_publishing {false};
+    // AFC: the rest of a send, run once the plate is sliced again for the lanes picked (afc_reslice_for_lanes).
+    std::function<void()> m_afc_after_reslice;
     int m_is_RightClickInLeftUI{-1};
     int m_cur_slice_plate;
     //BBS: m_slice_all in .gcode.3mf file case, set true when slice all
@@ -10561,6 +10564,7 @@ struct Plater::priv
     void on_slicing_update(SlicingStatusEvent&);
     void on_slicing_completed(wxCommandEvent&);
     void on_process_completed(SlicingProcessCompletedEvent&);
+    bool afc_reslice_for_lanes(std::function<void()> resume);
     void on_export_began(wxCommandEvent&);
     void on_export_finished(wxCommandEvent&);
     void on_slicing_began();
@@ -15399,6 +15403,9 @@ bool Plater::priv::warnings_dialog()
 void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 {
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": enter, m_ignore_event %1%, status %2%")%m_ignore_event %evt.status();
+    // AFC: a send waiting on this slice goes on only when it succeeds, and never with a later one.
+    std::function<void()> afc_resume = std::move(m_afc_after_reslice);
+    m_afc_after_reslice = nullptr;
     //BBS:ignore cancel event for some special case
     if (m_ignore_event)
     {
@@ -15620,6 +15627,8 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             }
         }
         q->SetDropTarget(new PlaterDropTarget(*main_frame, *q));
+        if (afc_resume && !has_error && !evt.cancelled() && evt.success())
+            q->CallAfter(afc_resume);
     }
     else
     {
@@ -15651,6 +15660,40 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         }
     }
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", exit.");
+}
+
+// AFC: with Purge in prime tower the tower flushes the lane changes the plate was sliced for. When the lanes picked
+// before a print put a T(n) on another toolhead, the plate is sliced again for them (filament_toolhead) and `resume`
+// sends it once that is done, so the tower flushes those lane changes too. False when no new slice is needed and
+// the caller sends right away.
+bool Plater::priv::afc_reslice_for_lanes(std::function<void()> resume)
+{
+    PartPlate   *plate = partplate_list.get_curr_plate();
+    const Print *print = plate != nullptr ? plate->fff_print() : nullptr;
+    if (print == nullptr || !print->afc_lane_flush_on_tower())
+        return false;
+    const std::vector<int> &sliced = print->config().filament_toolhead.values;
+    const std::vector<int>  heads  = AFCProtocol::toolheads_at_print(sliced, AFCManager::instance().mapped_toolheads());
+    std::vector<int>        as_sliced = sliced;
+    as_sliced.resize(heads.size(), -1);
+    if (heads == as_sliced)
+        return false;
+
+    PresetBundle &bundle = *wxGetApp().preset_bundle;
+    for (size_t i = 0; i < heads.size(); ++i)
+        if (heads[i] >= 0)
+            bundle.set_filament_toolhead(i, heads[i]);
+    BOOST_LOG_TRIVIAL(warning) << "AFC print: slicing again for the toolheads of the lanes picked";
+    notification_manager->push_notification(NotificationType::CustomNotification,
+                                            NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                            _u8L("Slicing again for the lanes picked, so the prime tower flushes their lane changes. "
+                                                 "It goes to the printer when that is done."));
+    m_afc_after_reslice = std::move(resume);
+    if (!q->reslice() || !background_process.running()) {
+        m_afc_after_reslice = nullptr;
+        show_error(q, _L("The plate could not be sliced again for the lanes picked, so it was not sent."));
+    }
+    return true;
 }
 
 void Plater::priv::on_action_add(SimpleEvent&)
@@ -21839,52 +21882,63 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.storage     = dlg.storage();
 
 
-        // AFC: the lanes picked on the lane screen can put a T(n) on another toolhead than the
-        // plate was sliced for, so the file's PURGE_LENGTH follows them.
-        auto follow_lane_map = [this, &upload_job]() {
-            PartPlate *plate = get_partplate_list().get_curr_plate();
-            if (plate == nullptr || plate->fff_print() == nullptr)
-                return true;
-            std::string    error;
-            const fs::path mapped = AFCPrintDialog::gcode_for_lane_map(upload_job.upload_data.source_path,
-                                                                       plate->fff_print()->full_print_config(),
-                                                                       AFCManager::instance().mapped_toolheads(), error);
-            if (mapped.empty()) {
-                show_error(this, error);
-                return false;
-            }
-            upload_job.upload_data.source_path = mapped;
-            return true;
-        };
+        const fs::path                  upload_path = upload_job.upload_data.upload_path;
+        const PrintHostPostUploadAction post_action = dlg.post_action();
+        const bool                      to_device   = dlg.switch_to_device_tab();
 
         // AFC: an upload without a print gets the lane screen too, which sets AFC's maps
         // now (they hold until a print ends). Its U1 switches go into the file, since the
         // U1 clears them after every print, and the slicer stores the file on the U1.
-        if (is_snapmaker_u1 && dlg.post_action() == PrintHostPostUploadAction::None) {
-            bool                        shown = false;
-            AFCProtocol::U1PrintOptions u1_print;
-            if (!AFCPrintDialog::map_lanes_for_upload(this, shown, u1_print))
-                return;
-            if (shown) {
-                if (!follow_lane_map())
-                    return;
+        bool                        upload_lanes = false;
+        AFCProtocol::U1PrintOptions upload_options;
+        if (is_snapmaker_u1 && post_action == PrintHostPostUploadAction::None &&
+            !AFCPrintDialog::map_lanes_for_upload(this, upload_lanes, upload_options))
+            return;
+
+        // AFC: map every project filament to an AFC lane before the Snapmaker
+        // print dialog, which only knows the four toolheads. The U1 print
+        // switches picked there open Snapmaker's dialog already set.
+        AFCProtocol::U1PrintOptions afc_u1_print;
+        const bool                  print_lanes = post_action != PrintHostPostUploadAction::None;
+        if (print_lanes && !AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print))
+            return;
+
+        // Sends the plate's G-code as it is once the lanes are picked: now, or after the plate is sliced again for them.
+        auto send = [this, source_path = upload_job.upload_data.source_path, upload_path, post_action, to_device, upload_lanes,
+                     upload_options, print_lanes, afc_u1_print]() {
+            fs::path source = source_path;
+            // AFC: the lanes picked on the lane screen can put a T(n) on another toolhead than the
+            // plate was sliced for, so the file's PURGE_LENGTH follows them.
+            if (upload_lanes || print_lanes) {
+                PartPlate *plate = get_partplate_list().get_curr_plate();
+                if (plate != nullptr && plate->fff_print() != nullptr) {
+                    std::string    error;
+                    const fs::path mapped = AFCPrintDialog::gcode_for_lane_map(source, plate->fff_print()->full_print_config(),
+                                                                               AFCManager::instance().mapped_toolheads(), error);
+                    if (mapped.empty()) {
+                        show_error(this, error);
+                        return;
+                    }
+                    source = mapped;
+                }
+            }
+
+            if (upload_lanes) {
                 std::string error;
-                if (u1_print.present) {
-                    const fs::path with_options = AFCPrintDialog::gcode_with_print_options(upload_job.upload_data.source_path,
-                                                                                           u1_print, error);
+                if (upload_options.present) {
+                    const fs::path with_options = AFCPrintDialog::gcode_with_print_options(source, upload_options, error);
                     if (with_options.empty()) {
                         show_error(this, error);
                         return;
                     }
-                    upload_job.upload_data.source_path = with_options;
+                    source = with_options;
                 }
-                switch (AFCPrintDialog::upload_u1_file(this, upload_job.upload_data.source_path, upload_job.upload_data.upload_path,
-                                                       error)) {
+                switch (AFCPrintDialog::upload_u1_file(this, source, upload_path, error)) {
                 case AFCPrintDialog::U1Send::Sent:
                     get_notification_manager()->push_notification(NotificationType::CustomNotification,
                                                                   NotificationManager::NotificationLevel::RegularNotificationLevel,
                                                                   _u8L("The file was uploaded to the printer."));
-                    if (dlg.switch_to_device_tab())
+                    if (to_device)
                         wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
                     return;
                 case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
@@ -21892,50 +21946,43 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
                 case AFCPrintDialog::U1Send::NotSent: break; // Snapmaker's popup below sends the same file
                 }
             }
-        }
 
-        // AFC: map every project filament to an AFC lane before the Snapmaker
-        // print dialog, which only knows the four toolheads. The U1 print
-        // switches picked there open Snapmaker's dialog already set.
-        AFCProtocol::U1PrintOptions afc_u1_print;
-        if (dlg.post_action() != PrintHostPostUploadAction::None &&
-            (!AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print) || !follow_lane_map()))
-            return;
-
-        // The lane screen already holds the U1's switches, so it sends the print itself.
-        // Snapmaker's popup only takes over when nothing reached the printer (no LAN
-        // path to the U1, older firmware).
-        if (afc_u1_print.present && dlg.post_action() == PrintHostPostUploadAction::StartPrint) {
-            std::string error;
-            switch (AFCPrintDialog::send_u1_print(this, upload_job.upload_data.source_path, upload_job.upload_data.upload_path,
-                                                  afc_u1_print, error)) {
-            case AFCPrintDialog::U1Send::Sent:
-                get_notification_manager()->push_notification(NotificationType::CustomNotification,
-                                                              NotificationManager::NotificationLevel::RegularNotificationLevel,
-                                                              _u8L("The print was sent to the printer."));
-                if (dlg.switch_to_device_tab())
-                    wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
-                return;
-            case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
-            case AFCPrintDialog::U1Send::Canceled: return;
-            case AFCPrintDialog::U1Send::NotSent: break;
+            // The lane screen already holds the U1's switches, so it sends the print itself.
+            // Snapmaker's popup only takes over when nothing reached the printer (no LAN
+            // path to the U1, older firmware).
+            if (afc_u1_print.present && post_action == PrintHostPostUploadAction::StartPrint) {
+                std::string error;
+                switch (AFCPrintDialog::send_u1_print(this, source, upload_path, afc_u1_print, error)) {
+                case AFCPrintDialog::U1Send::Sent:
+                    get_notification_manager()->push_notification(NotificationType::CustomNotification,
+                                                                  NotificationManager::NotificationLevel::RegularNotificationLevel,
+                                                                  _u8L("The print was sent to the printer."));
+                    if (to_device)
+                        wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+                    return;
+                case AFCPrintDialog::U1Send::Failed: show_error(this, error); return;
+                case AFCPrintDialog::U1Send::Canceled: return;
+                case AFCPrintDialog::U1Send::NotSent: break;
+                }
             }
-        }
 
-        WebPreprintDialog* dialog = new WebPreprintDialog();
-        dialog->set_url_query(AFCPrintDialog::preprint_query(afc_u1_print));
-        dialog->set_swtich_to_device(dlg.switch_to_device_tab());
-        dialog->set_send_page(dlg.post_action() == PrintHostPostUploadAction::None);
-        dialog->set_gcode_file_name(upload_job.upload_data.source_path.string());
-        dialog->set_display_file_name(upload_job.upload_data.upload_path.string());
-        bool res = dialog->run();
+            WebPreprintDialog* dialog = new WebPreprintDialog();
+            dialog->set_url_query(AFCPrintDialog::preprint_query(afc_u1_print));
+            dialog->set_swtich_to_device(to_device);
+            dialog->set_send_page(post_action == PrintHostPostUploadAction::None);
+            dialog->set_gcode_file_name(source.string());
+            dialog->set_display_file_name(upload_path.string());
+            dialog->run();
 
-        if (dialog->is_finish()) {
-            wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
-        }
+            if (dialog->is_finish()) {
+                wxGetApp().mainframe->select_tab(MainFrame::TabPosition::tpMonitor);
+            }
 
-        delete dialog;
-
+            delete dialog;
+        };
+        // AFC: with Purge in prime tower, lanes picked on another toolhead are sliced for first.
+        if (!(upload_lanes || print_lanes) || !p->afc_reslice_for_lanes(send))
+            send();
         return;
     }
     else {
@@ -22012,21 +22059,27 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
                 return;
         }
 
-        if (use_3mf) {
-            // Process gcode
-            const int result = send_gcode(plate_idx, nullptr);
+        // Uploads the plate as it is: now, or after it is sliced again for the lanes picked.
+        auto job  = std::make_shared<PrintHostJob>(std::move(upload_job));
+        auto send = [this, job, plate_idx, use_3mf]() {
+            if (use_3mf) {
+                // Process gcode
+                const int result = send_gcode(plate_idx, nullptr);
 
-            if (result < 0) {
-                wxString msg = _L("Abnormal print file data. Please slice again");
-                show_error(this, msg, false);
-                return;
+                if (result < 0) {
+                    wxString msg = _L("Abnormal print file data. Please slice again");
+                    show_error(this, msg, false);
+                    return;
+                }
+
+                job->upload_data.source_path = p->m_print_job_data._3mf_path;
             }
 
-            upload_job.upload_data.source_path = p->m_print_job_data._3mf_path;
-
-        }
-
-        p->export_gcode(fs::path(), false, std::move(upload_job));
+            p->export_gcode(fs::path(), false, std::move(*job));
+        };
+        // AFC: with Purge in prime tower, lanes picked on another toolhead are sliced for first.
+        if (job->upload_data.afc_toolheads.empty() || !p->afc_reslice_for_lanes(send))
+            send();
     }
 }
 int Plater::send_gcode(int plate_idx, Export3mfProgressFn proFn)
