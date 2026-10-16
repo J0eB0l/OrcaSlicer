@@ -4187,6 +4187,17 @@ void PrintConfigDef::init_fff_params()
     def->cli = ConfigOptionDef::nocli;
     def->set_default_value(new ConfigOptionFloats { -1 });
 
+    // AFC: written by the filament sync from each lane's AFC extruder, kept with the project.
+    def = this->add("filament_toolhead", coInts);
+    def->label = L("Filament toolhead");
+    def->tooltip = L("Toolhead each filament slot is fed into, from AFC (0 = extruder, 1 = extruder1, ...). "
+                     "On a multi-toolhead printer, slots that share a toolhead are lanes of one filament unit: "
+                     "a change between them sends the flushing volume to AFC as PURGE_LENGTH for its poop, "
+                     "while a switch to a toolhead that already holds its filament sends none. -1 when unknown.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionInts { -1 });
+
     def = this->add("cooling_tube_retraction", coFloat);
     def->label = L("Cooling tube position");
     def->tooltip = L("Distance of the center-point of the cooling tube from the extruder tip.");

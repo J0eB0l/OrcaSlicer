@@ -802,6 +802,40 @@ std::vector<AFCProtocol::ProjectFilament> AFCManager::project_filaments(json *de
     return out;
 }
 
+void AFCManager::fill_filament_toolheads(PresetBundle &bundle) const
+{
+    const std::shared_ptr<PrintHost> host = afc_host();
+    if (!host || printer_sn() != host_key(host))
+        return;
+    const AFCProtocol::Snapshot snap = snapshot();
+    if (!snap.present)
+        return;
+    for (size_t i = 0; i < bundle.filament_presets.size(); ++i)
+        if (bundle.filament_toolhead(i) < 0)
+            if (const AFCProtocol::Lane *lane = snap.lane_for_tool(int(i)); lane != nullptr && lane->extruder_index >= 0)
+                bundle.set_filament_toolhead(i, lane->extruder_index);
+}
+
+std::vector<int> AFCManager::mapped_toolheads() const
+{
+    std::vector<int>                 out;
+    const std::shared_ptr<PrintHost> host = afc_host();
+    if (!host || printer_sn() != host_key(host))
+        return out;
+    const AFCProtocol::Snapshot snap = snapshot();
+    if (!snap.present)
+        return out;
+    for (const AFCProtocol::ProjectFilament &f : project_filaments()) {
+        const AFCProtocol::Lane *lane = f.used && f.id >= 0 ? snap.lane_for_tool(f.id) : nullptr;
+        if (lane == nullptr || lane->extruder_index < 0)
+            continue;
+        if (out.size() <= size_t(f.id))
+            out.resize(size_t(f.id) + 1, -1);
+        out[size_t(f.id)] = lane->extruder_index;
+    }
+    return out;
+}
+
 json AFCManager::page_state(bool include_project) const
 {
     const std::shared_ptr<PrintHost> host = afc_host();

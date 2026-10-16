@@ -921,6 +921,113 @@ bool apply_spool_pressure_advance(const std::vector<double> &spool, const std::v
     return changed;
 }
 
+ToolheadLoads::ToolheadLoads(std::vector<int> toolheads) : m_toolheads(std::move(toolheads))
+{
+    int heads = 0;
+    for (int head : m_toolheads)
+        heads = std::max(heads, head + 1);
+    m_loaded.assign(size_t(heads), -1);
+}
+
+bool ToolheadLoads::knows(unsigned int filament) const { return filament < m_toolheads.size() && m_toolheads[filament] >= 0; }
+
+int ToolheadLoads::change_to(unsigned int filament)
+{
+    if (!knows(filament))
+        return -1;
+    int &loaded = m_loaded[size_t(m_toolheads[filament])];
+    const int before = loaded;
+    loaded           = int(filament);
+    return before >= 0 && before != int(filament) ? before : -1;
+}
+
+float lane_change_flush(const std::vector<double> &flush_matrix, unsigned int from, unsigned int to, double multiplier)
+{
+    const size_t n = size_t(std::sqrt(double(flush_matrix.size())) + 0.5);
+    if (from >= n || to >= n)
+        return 0.f;
+    const double volume = flush_matrix[size_t(from) * n + to] * multiplier;
+    return std::isfinite(volume) && volume > 0 ? float(volume) : 0.f;
+}
+
+std::string with_purge_length(const std::string &gcode, const std::string &prefix, unsigned int tool, float purge_length)
+{
+    const std::string head = prefix + std::to_string(tool);
+    for (size_t line = 0; line < gcode.size();) {
+        const size_t end   = std::min(gcode.find('\n', line), gcode.size());
+        const size_t start = gcode.find_first_not_of(" \t", line);
+        if (start < end && gcode.compare(start, head.size(), head) == 0) {
+            const size_t after = start + head.size();
+            if (after == end || !std::isdigit(static_cast<unsigned char>(gcode[after]))) {
+                // A tool change that already carries one, from the user's own change G-code, stays as written.
+                if (gcode.find("PURGE_LENGTH", after) < end)
+                    return gcode;
+                // Tenths, written by hand so a decimal comma locale cannot reach the G-code.
+                const long tenths = std::lround(std::max(0.f, purge_length) * 10.f);
+                if (tenths <= 0)
+                    return gcode;
+                return gcode.substr(0, after) + " PURGE_LENGTH=" + std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) +
+                       gcode.substr(after);
+            }
+        }
+        line = end + 1;
+    }
+    return gcode;
+}
+
+PurgeLengths::PurgeLengths(std::vector<int> toolheads, FlushSettings flush) : m_loads(std::move(toolheads)), m_flush(std::move(flush)) {}
+
+std::string PurgeLengths::apply(const std::string &line)
+{
+    const size_t start = line.find_first_not_of(" \t");
+    if (start == std::string::npos || line[start] != 'T')
+        return line;
+    size_t end = start + 1;
+    while (end < line.size() && end - start <= 3 && std::isdigit(static_cast<unsigned char>(line[end])))
+        ++end;
+    // T and a number, then the end of the line, a parameter or a comment: T5, T5 PURGE_LENGTH=4.2, T5 ; load.
+    if (end == start + 1 || (end < line.size() && !std::isspace(static_cast<unsigned char>(line[end])) && line[end] != ';'))
+        return line;
+    const unsigned int tool = unsigned(std::stoul(line.substr(start + 1, end - start - 1)));
+    if (!m_loads.knows(tool))
+        return line;
+
+    // What the slicing put there goes, so the T command carries only this mapping's purge.
+    std::string bare = line;
+    const size_t comment = std::min(bare.find(';', end), bare.size());
+    const size_t key     = bare.find("PURGE_LENGTH=", end);
+    if (key < comment) {
+        size_t cut = key;
+        while (cut > end && std::isspace(static_cast<unsigned char>(bare[cut - 1])))
+            --cut;
+        size_t value_end = key;
+        while (value_end < bare.size() && !std::isspace(static_cast<unsigned char>(bare[value_end])) && bare[value_end] != ';')
+            ++value_end;
+        bare.erase(cut, value_end - cut);
+    }
+
+    const int from = m_loads.change_to(tool);
+    if (from < 0)
+        return bare;
+    const std::vector<double> &diameters = m_flush.filament_diameters;
+    const double diameter = tool < diameters.size() ? diameters[tool] : diameters.empty() ? 1.75 : diameters.back();
+    const double area     = 0.78539816339744831 * diameter * diameter; // pi / 4 * d²
+    const float  volume   = lane_change_flush(m_flush.matrix, unsigned(from), tool, m_flush.multiplier);
+    return area > 0 && volume > 0 ? with_purge_length(bare, "T", tool, float(volume / area)) : bare;
+}
+
+std::vector<int> toolheads_at_print(std::vector<int> sliced, const std::vector<int> &mapped)
+{
+    for (size_t i = 0; i < mapped.size(); ++i) {
+        if (mapped[i] < 0)
+            continue;
+        if (sliced.size() <= i)
+            sliced.resize(i + 1, -1);
+        sliced[i] = mapped[i];
+    }
+    return sliced;
+}
+
 std::string filament_display_name(const std::string &vendor, const std::string &type, const std::string &sub_type)
 {
     if (sub_type == "Support")
@@ -1220,6 +1327,32 @@ bool write_gcode_with_prelude(const std::string &src, const std::string &dst, co
         out << in.rdbuf();
     out.flush();
     if (!out || (rest && in.bad())) {
+        error = "cannot write " + dst;
+        return false;
+    }
+    return true;
+}
+
+bool write_gcode_with_purge_lengths(const std::string &src, const std::string &dst, PurgeLengths &purge, std::string &error)
+{
+    boost::nowide::ifstream in(src.c_str(), std::ios::binary);
+    if (!in) {
+        error = "cannot read " + src;
+        return false;
+    }
+    boost::nowide::ofstream out(dst.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = "cannot write " + dst;
+        return false;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        out << purge.apply(line);
+        if (!in.eof())
+            out << '\n';
+    }
+    out.flush();
+    if (!out || in.bad()) {
         error = "cannot write " + dst;
         return false;
     }

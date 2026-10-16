@@ -3161,6 +3161,13 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
     // BBS: gcode writer doesn't know where the real position of extruder is after inserting custom gcode
     m_writer.set_current_position_clear(false);
     m_start_gcode_filament = GCodeProcessor::get_gcode_last_filament(machine_start_gcode);
+    // AFC: slots that share a toolhead on a multi-toolhead Klipper printer are lanes of one unit (single nozzle
+    // printers flush on every change already). Without AFC every slot's toolhead is unknown and nothing changes.
+    m_toolhead_loads = !print.config().single_extruder_multi_material && print.config().gcode_flavor == gcfKlipper ?
+                           AFCProtocol::ToolheadLoads(print.config().filament_toolhead.values) :
+                           AFCProtocol::ToolheadLoads();
+    if (m_start_gcode_filament >= 0)
+        m_toolhead_loads.change_to(unsigned(m_start_gcode_filament));
 
     // flush FanMover buffer to avoid modifying the start gcode if it's manual.
     if (!machine_start_gcode.empty() && this->m_fan_mover.get() != nullptr)
@@ -9151,6 +9158,17 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         wipe_volume                   = 0.f;
         old_filament_e_feedrate       = 200;
     }
+    // AFC: only a lane change on a toolhead flushes, from the lane that toolhead held, and AFC's poop does it
+    // (PURGE_LENGTH on the T command, also in flush_length). A switch to a toolhead that already holds its filament
+    // flushes nothing; the prime tower, when there is one, still primes it.
+    float afc_purge_length = 0.f;
+    const int lane_from    = m_toolhead_loads.change_to(extruder_id);
+    if (m_toolhead_loads.knows(extruder_id)) {
+        wipe_volume      = lane_from >= 0 ? AFCProtocol::lane_change_flush(m_config.flush_volumes_matrix.values, unsigned(lane_from),
+                                                                           extruder_id, m_config.flush_multiplier) :
+                                            0.f;
+        afc_purge_length = wipe_volume / filament_area;
+    }
     float wipe_length             = wipe_volume / filament_area;
     int   new_filament_e_feedrate = (int) (60.0 * get_value_at(m_config, m_config.filament_max_volumetric_speed, ConfigFlowDomain::Filament, extruder_id) / filament_area);
     new_filament_e_feedrate       = new_filament_e_feedrate == 0 ? 100 : new_filament_e_feedrate;
@@ -9211,6 +9229,9 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
 
         toolchange_gcode_parsed = placeholder_parser_process("change_filament_gcode", change_filament_gcode, extruder_id, &dyn_config);
         check_add_eol(toolchange_gcode_parsed);
+        if (afc_purge_length > 0.f)
+            toolchange_gcode_parsed = AFCProtocol::with_purge_length(toolchange_gcode_parsed, m_writer.toolchange_prefix(), extruder_id,
+                                                                     afc_purge_length);
         gcode += toolchange_gcode_parsed;
 
         // BBS
@@ -9237,6 +9258,8 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
 
     // We inform the writer about what is happening, but we may not use the resulting gcode.
     std::string toolchange_command = m_writer.toolchange(extruder_id);
+    if (afc_purge_length > 0.f)
+        toolchange_command = AFCProtocol::with_purge_length(toolchange_command, m_writer.toolchange_prefix(), extruder_id, afc_purge_length);
     if (!custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), extruder_id))
         gcode += toolchange_command;
     else {

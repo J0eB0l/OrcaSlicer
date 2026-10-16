@@ -272,6 +272,11 @@ public:
     // "spool_pressure_advance"); -1 = the slot uses its filament preset's.
     void                        set_spool_pressure_advance(size_t idx, double k);
     double                      spool_pressure_advance(size_t idx) const;
+    // AFC: toolhead filament slot idx is fed into (project option "filament_toolhead"), -1 = unknown.
+    void                        set_filament_toolhead(size_t idx, int toolhead);
+    int                         filament_toolhead(size_t idx) const;
+    // AFC: forgets every slot's toolhead, when another printer is selected.
+    void                        clear_filament_toolheads();
 
     // Read out the number of extruders from an active printer preset,
     // update size and content of filament_presets.

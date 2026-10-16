@@ -9443,12 +9443,15 @@ void Sidebar::show_sync_filament_dialog()
 
         // AFC: the pressure advance saved on each lane's spool, by the T(n) the slot was synced from.
         std::map<int, double> spool_flow_k;
+        // AFC: the toolhead each T(n)'s lane feeds, so a slicing knows which slots are lanes of one toolhead.
+        std::map<int, int> lane_toolhead;
         // AFC: the material most loaded lanes carry, for the gray slots of empty lanes.
         std::string afc_main_type = "PLA";
         if (afc_sync) {
             std::map<std::string, int> type_count;
             for (const AFCProtocol::ToolSlot &slot : AFCProtocol::tool_slots(AFCManager::instance().snapshot())) {
                 spool_flow_k[slot.tool] = slot.has_filament ? slot.flow_k : -1.;
+                lane_toolhead[slot.tool] = slot.mapped ? slot.extruder_index : -1;
                 if (slot.has_filament && slot.type != "NONE")
                     ++type_count[slot.type];
                 BOOST_LOG_TRIVIAL(warning) << "AFC sync: T" << slot.tool << " lane " << slot.lane << (slot.has_filament ? "" : " (empty)")
@@ -9492,6 +9495,8 @@ void Sidebar::show_sync_filament_dialog()
             preset_bundle->set_spool_pressure_advance(i, k != spool_flow_k.end() ? k->second : -1.);
             if (preset_bundle->spool_pressure_advance(i) >= 0)
                 ++spool_pa_slots;
+            auto head = lane_toolhead.find(int(syncedData[i].m_index));
+            preset_bundle->set_filament_toolhead(i, head != lane_toolhead.end() ? head->second : -1);
 
             if (co && i < co->values.size()) {
                 wxColour c = getMainColor(syncedData[i].m_color);
@@ -13657,6 +13662,8 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
         this->partplate_list.update_slice_context_to_current_plate(background_process);
         this->preview->update_gcode_result(partplate_list.get_current_slice_result());
     }
+    // AFC: slots not synced from AFC take the toolheads of the lanes AFC maps their T(n) to, on a printer that runs AFC.
+    AFCManager::instance().fill_filament_toolheads(*wxGetApp().preset_bundle);
     Print::ApplyStatus invalidated = background_process.apply(this->model, wxGetApp().preset_bundle->full_config());
     notify_filament_compatibility_after_apply();
 
@@ -21832,6 +21839,24 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.storage     = dlg.storage();
 
 
+        // AFC: the lanes picked on the lane screen can put a T(n) on another toolhead than the
+        // plate was sliced for, so the file's PURGE_LENGTH follows them.
+        auto follow_lane_map = [this, &upload_job]() {
+            PartPlate *plate = get_partplate_list().get_curr_plate();
+            if (plate == nullptr || plate->fff_print() == nullptr)
+                return true;
+            std::string    error;
+            const fs::path mapped = AFCPrintDialog::gcode_for_lane_map(upload_job.upload_data.source_path,
+                                                                       plate->fff_print()->full_print_config(),
+                                                                       AFCManager::instance().mapped_toolheads(), error);
+            if (mapped.empty()) {
+                show_error(this, error);
+                return false;
+            }
+            upload_job.upload_data.source_path = mapped;
+            return true;
+        };
+
         // AFC: an upload without a print gets the lane screen too, which sets AFC's maps
         // now (they hold until a print ends). Its U1 switches go into the file, since the
         // U1 clears them after every print, and the slicer stores the file on the U1.
@@ -21841,6 +21866,8 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
             if (!AFCPrintDialog::map_lanes_for_upload(this, shown, u1_print))
                 return;
             if (shown) {
+                if (!follow_lane_map())
+                    return;
                 std::string error;
                 if (u1_print.present) {
                     const fs::path with_options = AFCPrintDialog::gcode_with_print_options(upload_job.upload_data.source_path,
@@ -21871,7 +21898,8 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         // print dialog, which only knows the four toolheads. The U1 print
         // switches picked there open Snapmaker's dialog already set.
         AFCProtocol::U1PrintOptions afc_u1_print;
-        if (dlg.post_action() != PrintHostPostUploadAction::None && !AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print))
+        if (dlg.post_action() != PrintHostPostUploadAction::None &&
+            (!AFCPrintDialog::map_lanes_before_print(this, true, &afc_u1_print) || !follow_lane_map()))
             return;
 
         // The lane screen already holds the U1's switches, so it sends the print itself.
@@ -21969,9 +21997,13 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
         upload_job.upload_data.group       = dlg.group();
         upload_job.upload_data.storage     = dlg.storage();
 
-        // AFC: map every project filament to an AFC lane before the print starts.
-        if (upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint && !AFCPrintDialog::map_lanes_before_print(this))
-            return;
+        // AFC: map every project filament to an AFC lane before the print starts. The upload's
+        // PURGE_LENGTH then follows the toolheads those lanes feed.
+        if (upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint) {
+            if (!AFCPrintDialog::map_lanes_before_print(this))
+                return;
+            upload_job.upload_data.afc_toolheads = AFCManager::instance().mapped_toolheads();
+        }
 
         // Show "Is printer clean" dialog for PrusaConnect - Upload and print.
         if (std::string(upload_job.printhost->get_name()) == "PrusaConnect" && upload_job.upload_data.post_action == PrintHostPostUploadAction::StartPrint) {

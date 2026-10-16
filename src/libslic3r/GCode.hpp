@@ -26,6 +26,7 @@
 #include "GCode/SmallAreaInfillFlowCompensator.hpp"
 // ORCA: post processor below used for Dynamic Pressure advance
 #include "GCode/AdaptivePAProcessor.hpp"
+#include "AFCToolheads.hpp"
 
 #include <memory>
 #include <map>
@@ -646,6 +647,8 @@ private:
     coordf_t m_nominal_z;
     bool m_need_change_layer_lift_z = false;
     int m_start_gcode_filament = -1;
+    // AFC: the lane each toolhead holds, so only a lane change on a toolhead flushes.
+    AFCProtocol::ToolheadLoads m_toolhead_loads;
 
     std::set<unsigned int>                  m_initial_layer_extruders;
     // BBS

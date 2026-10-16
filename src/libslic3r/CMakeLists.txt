@@ -443,6 +443,7 @@ set(lisbslic3r_sources
     SSWCPProtocol.hpp
     AFCProtocol.cpp
     AFCProtocol.hpp
+    AFCToolheads.hpp
     SVG.hpp
     Technologies.hpp
     Tesselate.cpp

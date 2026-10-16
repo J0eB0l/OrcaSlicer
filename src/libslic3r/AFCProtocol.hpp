@@ -3,6 +3,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "AFCToolheads.hpp"
+
 #include <functional>
 #include <string>
 #include <utility>
@@ -259,6 +261,11 @@ bool build_tool_mapping_gcode(const Snapshot &snapshot, const std::vector<std::p
 /// set, when a file cannot be read or written.
 bool write_gcode_with_prelude(const std::string &src, const std::string &dst, const std::vector<std::string> &lines,
                               std::string &error);
+
+/// Copies the G-code file `src` to `dst` with every line passed through
+/// `purge`, so its tool changes carry the PURGE_LENGTH the print-time lane map
+/// needs. False, with `error` set, when a file cannot be read or written.
+bool write_gcode_with_purge_lengths(const std::string &src, const std::string &dst, PurgeLengths &purge, std::string &error);
 
 /// G-code for a physical lane action from the device panel:
 ///   "load"   -> CHANGE_TOOL LANE=<lane>  (swap this lane into its toolhead)

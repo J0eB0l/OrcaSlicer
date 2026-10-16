@@ -773,3 +773,119 @@ TEST_CASE("a cloud send starts the U1 like Snapmaker's popup does away from home
     CHECK(AFCProtocol::cloud_upload_location(json{{"url", "https://cdn.example/a.gcode"}}, true) == "https://cdn.example/a.gcode");
     CHECK(AFCProtocol::cloud_upload_location(json(), false).empty());
 }
+
+TEST_CASE("only a lane change on a toolhead flushes, a tool switch does not", "[AFCProtocol]")
+{
+    // Slots 0 and 2 are lanes of extruder, slot 1 is extruder1 alone, slot 3 is unknown.
+    AFCProtocol::ToolheadLoads loads({0, 1, 0, -1});
+    CHECK(loads.knows(0));
+    CHECK(loads.knows(1));
+    CHECK_FALSE(loads.knows(3));
+    CHECK_FALSE(loads.knows(4));
+
+    CHECK(loads.change_to(0) == -1); // first use of extruder: what it held is unknown
+    CHECK(loads.change_to(1) == -1); // tool switch to extruder1
+    CHECK(loads.change_to(0) == -1); // back to extruder, which still holds slot 0
+    CHECK(loads.change_to(2) == 0);  // lane change on extruder
+    CHECK(loads.change_to(1) == -1); // tool switch
+    CHECK(loads.change_to(2) == -1); // extruder still holds slot 2
+    CHECK(loads.change_to(3) == -1); // unknown toolhead
+    CHECK(loads.change_to(0) == 2);  // lane change on extruder
+
+    AFCProtocol::ToolheadLoads none;
+    CHECK_FALSE(none.knows(0));
+    CHECK(none.change_to(0) == -1);
+}
+
+TEST_CASE("a lane change flushes what the matrix says from the lane the toolhead held", "[AFCProtocol]")
+{
+    const std::vector<double> matrix{0, 100, 200, //
+                                     110, 0, 210, //
+                                     120, 220, 0};
+    CHECK_THAT(AFCProtocol::lane_change_flush(matrix, 0, 2, 1.0), WithinAbs(200, 1e-4));
+    CHECK_THAT(AFCProtocol::lane_change_flush(matrix, 2, 0, 0.5), WithinAbs(60, 1e-4));
+    CHECK(AFCProtocol::lane_change_flush(matrix, 1, 1, 1.0) == 0.f);
+    CHECK(AFCProtocol::lane_change_flush(matrix, 3, 0, 1.0) == 0.f);
+    CHECK(AFCProtocol::lane_change_flush({}, 0, 0, 1.0) == 0.f);
+}
+
+TEST_CASE("the purge length rides on the tool change line", "[AFCProtocol]")
+{
+    CHECK(AFCProtocol::with_purge_length("T5\n", "T", 5, 42.46f) == "T5 PURGE_LENGTH=42.5\n");
+    CHECK(AFCProtocol::with_purge_length("T5", "T", 5, 7.f) == "T5 PURGE_LENGTH=7.0");
+    // Not T5: T51, another tool, a comment or an M104 T5.
+    CHECK(AFCProtocol::with_purge_length("T51\n", "T", 5, 7.f) == "T51\n");
+    CHECK(AFCProtocol::with_purge_length("T4\n", "T", 5, 7.f) == "T4\n");
+    CHECK(AFCProtocol::with_purge_length("; Change Tool4 -> T5\nM104 S220 T5\n", "T", 5, 7.f) ==
+          "; Change Tool4 -> T5\nM104 S220 T5\n");
+
+    // The U1's change filament G-code writes its own T command.
+    const std::string u1 = "G91\nG1 Z1.5 F600\nG90\nM104 S220 T5\nM400\nT5\nSM_PRINT_PREEXTRUDE_FILAMENT INDEX=5\nG90\n";
+    CHECK(AFCProtocol::with_purge_length(u1, "T", 5, 31.25f) ==
+          "G91\nG1 Z1.5 F600\nG90\nM104 S220 T5\nM400\nT5 PURGE_LENGTH=31.3\nSM_PRINT_PREEXTRUDE_FILAMENT INDEX=5\nG90\n");
+    CHECK(AFCProtocol::with_purge_length("  T5 ; load\n", "T", 5, 3.f) == "  T5 PURGE_LENGTH=3.0 ; load\n");
+    // Only the first T5, and a user's own PURGE_LENGTH wins.
+    CHECK(AFCProtocol::with_purge_length("T5\nT5\n", "T", 5, 3.f) == "T5 PURGE_LENGTH=3.0\nT5\n");
+    CHECK(AFCProtocol::with_purge_length("T5 PURGE_LENGTH=80\n", "T", 5, 3.f) == "T5 PURGE_LENGTH=80\n");
+    CHECK(AFCProtocol::with_purge_length("M108 T2\n", "M108 T", 2, 3.f) == "M108 T2 PURGE_LENGTH=3.0\n");
+}
+
+TEST_CASE("a lane map picked at print time recomputes each tool change's purge", "[AFCProtocol]")
+{
+    // 1.75 mm filament: 2.405 mm² per mm, so 100 mm³ is 41.6 mm.
+    AFCProtocol::FlushSettings flush;
+    flush.matrix             = {0, 100, 200, //
+                                100, 0, 300, //
+                                200, 300, 0};
+    flush.multiplier         = 1.0;
+    flush.filament_diameters = {1.75, 1.75, 1.75};
+
+    // Sliced with T0 and T1 on one toolhead, the popup put T1 on its own.
+    AFCProtocol::PurgeLengths purge({0, 1, 0}, flush);
+    CHECK(purge.apply("T0") == "T0");
+    CHECK(purge.apply("G1 X10 Y10 E1") == "G1 X10 Y10 E1");
+    CHECK(purge.apply("T1 PURGE_LENGTH=41.6") == "T1");     // now a tool switch
+    CHECK(purge.apply("T2") == "T2 PURGE_LENGTH=83.2");     // lane change from T0
+    CHECK(purge.apply("  T0 ; back") == "  T0 PURGE_LENGTH=83.2 ; back");
+    CHECK(purge.apply("T1") == "T1");                       // extruder1 still holds T1
+    CHECK(purge.apply("; T2 in a comment") == "; T2 in a comment");
+    CHECK(purge.apply("M104 S210 T2") == "M104 S210 T2");
+    CHECK(purge.apply("TIMELAPSE_START") == "TIMELAPSE_START");
+    CHECK(purge.apply("T0_TEMP=200") == "T0_TEMP=200");
+
+    // A slot with no known toolhead keeps what the slicing wrote.
+    AFCProtocol::PurgeLengths unknown({-1, 0, 0}, flush);
+    CHECK(unknown.apply("T0 PURGE_LENGTH=5.0") == "T0 PURGE_LENGTH=5.0");
+    CHECK(unknown.apply("T1") == "T1");
+    CHECK(unknown.apply("T2 PURGE_LENGTH=9.9") == "T2 PURGE_LENGTH=124.7");
+
+    CHECK(AFCProtocol::toolheads_at_print({0, 0, 1}, {-1, 1}) == std::vector<int>{0, 1, 1});
+    CHECK(AFCProtocol::toolheads_at_print({-1}, {-1, -1, 2}) == std::vector<int>{-1, -1, 2});
+    CHECK(AFCProtocol::toolheads_at_print({0, 1}, {}) == std::vector<int>{0, 1});
+}
+
+TEST_CASE("the lane map's purge lengths are written into a copy of the G-code", "[AFCProtocol]")
+{
+    namespace fs        = boost::filesystem;
+    const fs::path dir  = fs::temp_directory_path() / fs::unique_path("afc-purge-%%%%-%%%%");
+    fs::create_directories(dir);
+    const std::string src = (dir / "plate.gcode").string();
+    const std::string dst = (dir / "plate.lanes.gcode").string();
+    {
+        boost::nowide::ofstream f(src, std::ios::binary);
+        f << "; generated\nT0\nG1 E1\nT1 PURGE_LENGTH=41.6\nT0\nG1 E1"; // no newline at the end
+    }
+    AFCProtocol::FlushSettings flush;
+    flush.matrix             = {0, 100, 100, 0};
+    flush.filament_diameters = {1.75};
+    AFCProtocol::PurgeLengths purge({0, 1}, flush);
+    std::string error;
+    REQUIRE(AFCProtocol::write_gcode_with_purge_lengths(src, dst, purge, error));
+    std::stringstream out;
+    out << boost::nowide::ifstream(dst, std::ios::binary).rdbuf();
+    CHECK(out.str() == "; generated\nT0\nG1 E1\nT1\nT0\nG1 E1");
+
+    CHECK_FALSE(AFCProtocol::write_gcode_with_purge_lengths((dir / "missing.gcode").string(), dst, purge, error));
+    CHECK_FALSE(error.empty());
+    fs::remove_all(dir);
+}

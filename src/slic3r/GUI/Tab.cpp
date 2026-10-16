@@ -6116,8 +6116,12 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
         if (current_dirty)
             m_presets->discard_current_changes();
 
+        const std::string old_printer = m_type == Preset::TYPE_PRINTER ? m_presets->get_selected_preset_name() : std::string();
         const bool is_selected = m_presets->select_preset_by_name(preset_name, false) || delete_current;
         assert(m_presets->get_edited_preset().name == preset_name || ! is_selected);
+        // AFC: the toolheads synced from one printer's AFC lanes do not hold on another printer.
+        if (m_type == Preset::TYPE_PRINTER && m_presets->get_selected_preset_name() != old_printer)
+            m_preset_bundle->clear_filament_toolheads();
         // Mark the print & filament enabled if they are compatible with the currently selected preset.
         // The following method should not discard changes of current print or filament presets on change of a printer profile,
         // if they are compatible with the current printer.

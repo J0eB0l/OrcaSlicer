@@ -189,6 +189,42 @@ boost::filesystem::path AFCPrintDialog::gcode_with_print_options(const boost::fi
     return out;
 }
 
+boost::filesystem::path AFCPrintDialog::gcode_for_lane_map(const boost::filesystem::path &gcode, const DynamicPrintConfig &sliced,
+                                                           const std::vector<int> &mapped, std::string &error)
+{
+    error.clear();
+    // Slicing only placed PURGE_LENGTH for a multi-toolhead Klipper printer (see GCode::_do_export).
+    const auto *flavor = sliced.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
+    const auto *heads  = sliced.option<ConfigOptionInts>("filament_toolhead");
+    if (mapped.empty() || flavor == nullptr || flavor->value != gcfKlipper || heads == nullptr ||
+        sliced.opt_bool("single_extruder_multi_material"))
+        return gcode;
+    std::vector<int> toolheads = AFCProtocol::toolheads_at_print(heads->values, mapped);
+    std::vector<int> as_sliced = heads->values;
+    as_sliced.resize(toolheads.size(), -1);
+    if (toolheads == as_sliced)
+        return gcode;
+
+    AFCProtocol::FlushSettings flush;
+    if (const auto *matrix = sliced.option<ConfigOptionFloats>("flush_volumes_matrix"))
+        flush.matrix = matrix->values;
+    if (const auto *multiplier = sliced.option<ConfigOptionFloat>("flush_multiplier"))
+        flush.multiplier = multiplier->value;
+    if (const auto *diameters = sliced.option<ConfigOptionFloats>("filament_diameter"))
+        flush.filament_diameters = diameters->values;
+    AFCProtocol::PurgeLengths purge(toolheads, std::move(flush));
+
+    boost::filesystem::path out = gcode;
+    out.replace_extension(".lanes" + gcode.extension().string());
+    if (!AFCProtocol::write_gcode_with_purge_lengths(u8_path(gcode), u8_path(out), purge, error))
+        return {};
+    std::string list;
+    for (int head : toolheads)
+        list += (list.empty() ? "" : ",") + std::to_string(head);
+    BOOST_LOG_TRIVIAL(warning) << "AFC print: purge lengths recomputed for toolheads " << list << " into " << u8_path(out);
+    return out;
+}
+
 std::string AFCPrintDialog::preprint_query(const AFCProtocol::U1PrintOptions &u1_print)
 {
     if (!u1_print.present)

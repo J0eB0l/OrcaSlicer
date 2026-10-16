@@ -12,6 +12,7 @@
 #include <libslic3r/enum_bitmask.hpp>
 #include "Http.hpp"
 #include <map>
+#include <vector>
 #include "nlohmann/json.hpp"
 
 class wxArrayString;
@@ -42,6 +43,10 @@ struct PrintHostUpload
 
     // Some extended parameters for different upload methods.
     std::map<std::string, std::string> extended_info;
+
+    // AFC: toolhead of each T(n)'s lane as the print popup left AFC's map (-1 = as sliced),
+    // so the upload's PURGE_LENGTH follows it. Empty = upload the G-code as sliced.
+    std::vector<int> afc_toolheads;
 };
 
 class PrintHost

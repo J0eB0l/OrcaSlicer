@@ -102,6 +102,17 @@ public:
     // sliced plate uses them. UI thread only.
     std::vector<AFCProtocol::ProjectFilament> project_filaments(nlohmann::json *details = nullptr) const;
 
+    // Gives every filament slot the project does not know the toolhead of yet (not synced
+    // from AFC) the toolhead of the lane AFC maps its T(n) to now, when the selected printer
+    // runs AFC. It sticks with the project like a synced one, so later remaps do not
+    // invalidate the slicing (the print popup recomputes PURGE_LENGTH for them). A printer
+    // without AFC keeps every slot unknown. UI thread only.
+    void fill_filament_toolheads(PresetBundle &bundle) const;
+
+    // The toolhead of the lane AFC maps each T(n) the current plate uses to now, -1 for
+    // the rest (and all of them when AFC has not answered). UI thread only.
+    std::vector<int> mapped_toolheads() const;
+
     // Everything the AFC page shows: {"afc": snapshot, "project": {...}, "connected": bool}.
     // UI thread only (reads the plater).
     nlohmann::json page_state(bool include_project) const;

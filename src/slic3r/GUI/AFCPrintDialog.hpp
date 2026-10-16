@@ -4,6 +4,7 @@
 #include "libslic3r/AFCProtocol.hpp"
 
 #include <string>
+#include <vector>
 
 #include <boost/filesystem/path.hpp>
 
@@ -11,6 +12,7 @@
 #include <wx/webview.h>
 
 namespace Slic3r {
+class DynamicPrintConfig;
 namespace GUI {
 
 // Lane-mapping step shown before a print starts when the printer runs AFC
@@ -50,6 +52,13 @@ public:
     // hold however the print is started later. Empty, with `error` set, on failure.
     static boost::filesystem::path gcode_with_print_options(const boost::filesystem::path   &gcode,
                                                             const AFCProtocol::U1PrintOptions &u1_print, std::string &error);
+
+    // The sliced G-code `gcode` with its PURGE_LENGTH recomputed for `mapped` (the toolhead
+    // of each T(n)'s lane at print time, -1 = as sliced), written next to it, when that puts a
+    // slot on another toolhead than `sliced` (the config the plate was sliced with) has; else
+    // `gcode` itself. Empty, with `error` set, on failure. No UI, so any thread.
+    static boost::filesystem::path gcode_for_lane_map(const boost::filesystem::path &gcode, const DynamicPrintConfig &sliced,
+                                                      const std::vector<int> &mapped, std::string &error);
 
     // Query string that opens Snapmaker's print popup with these switches on
     // (read by the flutter_web patch), empty when there are none.
