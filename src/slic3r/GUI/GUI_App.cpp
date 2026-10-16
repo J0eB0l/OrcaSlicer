@@ -501,6 +501,14 @@ public:
                        startX + brandExt.GetWidth() + gap,
                        tagY);
 
+        // AFC: a tilted "Powered by AFC" badge centered under the version tag, kept inside the right edge
+        wxBitmap* afcBmp = bmpCache.load_svg("splash_powered_by_afc", scaleX(150));
+        if (afcBmp != nullptr) {
+            int afcX = startX + brandExt.GetWidth() + gap + (versionExt.GetWidth() - afcBmp->GetWidth()) / 2;
+            afcX     = std::min(afcX, width - scaleX(12) - afcBmp->GetWidth());
+            memDc.DrawBitmap(*afcBmp, afcX, tagY + versionExt.GetHeight() + scaleY(2), true);
+        }
+
         // Dynamic text y position (for SetText)
         m_action_line_y_position = scaleY(384);
     }
