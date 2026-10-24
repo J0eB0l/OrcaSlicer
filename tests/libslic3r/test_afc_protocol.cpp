@@ -517,9 +517,9 @@ TEST_CASE("dry commands are validated per unit", "[AFCProtocol]")
 
     std::string g, err;
     CHECK(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "start"}, {"temp", 55}, {"minutes", 240}, {"rotate", true}}, g, err));
-    CHECK(g == "ACE_DRY UNIT=Ace2_1 TEMP=55 DURATION=240 ROTATE=1");
+    CHECK(g == "AFC_ACE_DRY UNIT=Ace2_1 TEMP=55 DURATION=240 ROTATE=1");
     CHECK(AFCProtocol::build_dry_gcode(s, "Ace2_1", json{{"action", "stop"}}, g, err));
-    CHECK(g == "ACE_DRY_STOP UNIT=Ace2_1");
+    CHECK(g == "AFC_ACE_DRY_STOP UNIT=Ace2_1");
     CHECK(AFCProtocol::build_dry_gcode(s, "Bambu_AMS_1", json{{"action", "start"}, {"temp", 65}, {"minutes", 480}}, g, err));
     CHECK(g == "AFC_BAMBU_HEATER_START UNIT=Bambu_AMS_1 TEMP=65 TIME=480 ROTATE=0");
     CHECK(AFCProtocol::build_dry_gcode(s, "Bambu_AMS_1", json{{"action", "stop"}}, g, err));

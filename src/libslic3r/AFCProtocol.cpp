@@ -742,7 +742,7 @@ bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit_name, con
     const Dryer      &d      = unit->dryer;
     const std::string action = request.is_object() ? request.value("action", std::string()) : std::string();
     if (action == "stop") {
-        gcode = (d.kind == "ace" ? "ACE_DRY_STOP UNIT=" : "AFC_BAMBU_HEATER_STOP UNIT=") + unit_name;
+        gcode = (d.kind == "ace" ? "AFC_ACE_DRY_STOP UNIT=" : "AFC_BAMBU_HEATER_STOP UNIT=") + unit_name;
         return true;
     }
     if (action != "start") {
@@ -768,7 +768,7 @@ bool build_dry_gcode(const Snapshot &snapshot, const std::string &unit_name, con
     const json rotate_v = request.value("rotate", json(false));
     const bool rotate   = rotate_v.is_boolean() ? rotate_v.get<bool>() : (rotate_v.is_number() && rotate_v.get<double>() != 0);
     if (d.kind == "ace")
-        gcode = "ACE_DRY UNIT=" + unit_name + " TEMP=" + std::to_string(temp) + " DURATION=" + std::to_string(minutes) +
+        gcode = "AFC_ACE_DRY UNIT=" + unit_name + " TEMP=" + std::to_string(temp) + " DURATION=" + std::to_string(minutes) +
                 " ROTATE=" + (rotate ? "1" : "0");
     else
         gcode = "AFC_BAMBU_HEATER_START UNIT=" + unit_name + " TEMP=" + std::to_string(temp) + " TIME=" + std::to_string(minutes) +
