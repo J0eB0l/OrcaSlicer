@@ -1360,6 +1360,12 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionStrings,             process_flow_support))
     ((ConfigOptionStrings,             printer_flow_support))
     ((ConfigOptionInts,                filament_flow_step_size))
+    // AFC: pressure advance of the spool synced into each filament slot
+    ((ConfigOptionFloats,              spool_pressure_advance))
+    // AFC: toolhead each filament slot is fed into, -1 = unknown
+    ((ConfigOptionInts,                filament_toolhead))
+    // AFC: T number of the lane each filament slot was synced from, -1 = none
+    ((ConfigOptionInts,                filament_afc_tool))
 )
 
 // This object is mapped to Perl as Slic3r::Config::Print.

@@ -13,6 +13,7 @@
 #include "Thread.hpp"
 #include "Time.hpp"
 #include "GCode.hpp"
+#include "AFCToolheads.hpp"
 #include "GCode/WipeTower.hpp"
 #include "GCode/WipeTower2.hpp"
 #include "GCode/WipeTowerHelper.hpp"
@@ -560,6 +561,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "before_layer_change_gcode",
         "enable_pressure_advance",
         "pressure_advance",
+        "spool_pressure_advance",
+        "filament_afc_tool",
         "enable_overhang_bridge_fan",
         "overhang_fan_speed",
         "overhang_fan_threshold",
@@ -824,6 +827,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "dithering_local_z_infill"
             || opt_key == "enable_filament_ramming"
             || opt_key == "purge_in_prime_tower"
+            || opt_key == "filament_toolhead"
             || opt_key == "z_offset"
             || opt_key == "support_multi_bed_types"
             || opt_key == "filament_adhesiveness_category"
@@ -3165,6 +3169,12 @@ bool Print::has_wipe_tower() const
     return false;
 }
 
+bool Print::afc_lane_flush_on_tower() const
+{
+    return this->has_wipe_tower() && m_config.purge_in_prime_tower && !m_config.single_extruder_multi_material &&
+           m_config.gcode_flavor == gcfKlipper;
+}
+
 const WipeTowerData &Print::wipe_tower_data(size_t filaments_cnt) const
 {
     // If the wipe tower wasn't created yet, make sure the depth and brim_width members are set to default.
@@ -3391,6 +3401,18 @@ void Print::_make_wipe_tower()
         // to pass to wipe_tower (so that it can use it for planning the layout of the tower)
         {
             unsigned int current_extruder_id = m_wipe_tower_data.tool_ordering.all_extruders().back();
+            // AFC: with Purge in prime tower on a multi-toolhead Klipper printer, a lane change on a toolhead flushes on the
+            // tower from the lane that toolhead held, and a tool switch only primes. The changes are followed in the order
+            // GCode::set_extruder makes them: priming loads every extruder, else the print starts on the last one. Lane
+            // changes away from these tower tool changes (priming, Local-Z) still go to AFC's poop.
+            AFCProtocol::ToolheadLoads toolhead_loads = this->afc_lane_flush_on_tower() ?
+                                                            AFCProtocol::ToolheadLoads(m_config.filament_toolhead.values) :
+                                                            AFCProtocol::ToolheadLoads();
+            if (m_config.single_extruder_multi_material_priming)
+                for (unsigned int extruder_id : m_wipe_tower_data.tool_ordering.all_extruders())
+                    toolhead_loads.change_to(extruder_id);
+            else
+                toolhead_loads.change_to(current_extruder_id);
             for (auto &layer_tools : m_wipe_tower_data.tool_ordering.layer_tools()) { // for all layers
                 if (!layer_tools.has_wipe_tower)
                     continue;
@@ -3413,6 +3435,8 @@ void Print::_make_wipe_tower()
                     for (const LocalZWipeTowerToolchange &toolchange : local_z_toolchanges) {
                         wipe_tower.plan_local_z_toolchange((float) layer_tools.print_z, (float) layer_tools.wipe_tower_layer_height,
                                                            toolchange.old_tool, toolchange.new_tool, effective_wipe_tower_volume(m_config, toolchange.new_tool));
+                        // Only primes here; a lane change in it goes to AFC's poop (GCode::set_extruder).
+                        toolhead_loads.change_to(unsigned(toolchange.new_tool));
                     }
                     if (!local_z_toolchanges.empty())
                         current_extruder_id = local_z_toolchanges.back().new_tool;
@@ -3426,15 +3450,25 @@ void Print::_make_wipe_tower()
                 for (const auto extruder_id : nominal_layer_extruders) {
                     if ((first_layer && extruder_id == m_wipe_tower_data.tool_ordering.all_extruders().back()) || extruder_id !=
                         current_extruder_id) {
-                        float volume_to_wipe = effective_wipe_tower_volume(m_config, extruder_id);
-                        if (m_config.purge_in_prime_tower && m_config.single_extruder_multi_material) {
-                            volume_to_wipe = wipe_volumes[current_extruder_id][extruder_id]; // total volume to wipe after this toolchange
-                            volume_to_wipe *= m_config.flush_multiplier;
+                        float      volume_to_wipe  = effective_wipe_tower_volume(m_config, extruder_id);
+                        const int  lane_from       = toolhead_loads.change_to(extruder_id);
+                        const bool afc_lane_change = lane_from >= 0;
+                        if ((m_config.purge_in_prime_tower && m_config.single_extruder_multi_material) || afc_lane_change) {
+                            // The filament flushed out: the lane this toolhead held, or the previous tool on a single nozzle.
+                            const unsigned int flushed_id = afc_lane_change ? unsigned(lane_from) : current_extruder_id;
+                            if (afc_lane_change)
+                                volume_to_wipe = std::max(volume_to_wipe,
+                                                          AFCProtocol::lane_change_flush(m_config.flush_volumes_matrix.values, flushed_id,
+                                                                                         extruder_id, m_config.flush_multiplier));
+                            else {
+                                volume_to_wipe = wipe_volumes[current_extruder_id][extruder_id]; // total volume to wipe after this toolchange
+                                volume_to_wipe *= m_config.flush_multiplier;
+                            }
                             // Not all of that can be used for infill purging:
                             volume_to_wipe -= (float) get_value_at(m_config, m_config.filament_minimal_purge_on_wipe_tower, ConfigFlowDomain::Filament, extruder_id);
 
                             // try to assign some infills/objects for the wiping:
-                            volume_to_wipe = layer_tools.wiping_extrusions().mark_wiping_extrusions(*this, current_extruder_id, extruder_id,
+                            volume_to_wipe = layer_tools.wiping_extrusions().mark_wiping_extrusions(*this, flushed_id, extruder_id,
                                                                                                     volume_to_wipe);
 
                             // add back the minimal amount toforce on the wipe tower:

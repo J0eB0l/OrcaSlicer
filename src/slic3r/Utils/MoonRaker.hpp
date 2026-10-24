@@ -46,6 +46,10 @@ public:
     // Get printer information
     bool get_machine_info(const std::vector<std::pair<std::string, std::vector<std::string>>>& targets, nlohmann::json& response) override;
 
+    // Moonraker JSON-RPC over plain HTTP, for any Klipper printer reached by its
+    // Moonraker URL. Replies are shaped like the MQTT ones: {"data": result} or {"error": ...}.
+    void async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback) override;
+
     // Configuration getters
     bool has_auto_discovery() const override { return true; }
     bool can_test() const override { return true; }
@@ -250,6 +254,7 @@ public:
                                                     std::function<void(const nlohmann::json& response)>                  callback) override;
     virtual void async_unsubscribe_machine_info(const std::string& hash, std::function<void(const nlohmann::json&)>) override;
     virtual void async_send_gcodes(const std::vector<std::string>& scripts, std::function<void(const nlohmann::json&)>) override;
+    virtual void async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback) override;
     virtual void async_get_printer_info(std::function<void(const nlohmann::json& response)> callback) override;
 
     virtual void async_start_print_job(const std::string& filename, std::function<void(const nlohmann::json&)> cb) override;
@@ -345,7 +350,8 @@ private:
                         const nlohmann::json& params,
                         bool need_response,
                         std::function<void(const nlohmann::json& response)> callback,
-                        std::function<void()> timeout_callback);
+                        std::function<void()> timeout_callback,
+                        std::chrono::milliseconds timeout = std::chrono::milliseconds(80000));
 
     bool add_response_target(int64_t id,
                            std::function<void(const nlohmann::json&)> callback,

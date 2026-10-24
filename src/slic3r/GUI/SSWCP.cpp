@@ -1,5 +1,7 @@
 // Implementation of web communication protocol for Slicer Studio
 #include "SSWCP.hpp"
+#include "AFCManager.hpp"
+#include "AFCWebBridge.hpp"
 #include "FilamentColorUtils.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
@@ -1774,6 +1776,13 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
                         machineData.nozzle_volume_type = nozzle_volume_types[i];
                     machine_nozzles.push_back(machineData);
                 }
+            }
+
+            // AFC: a U1 running AFC has one filament per AFC T(n), not one per toolhead.
+            // Replace the toolhead slots with AFC's when the printer has AFC.
+            if (std::shared_ptr<PrintHost> afc_host = AFCManager::device_host()) {
+                AFCManager::instance().request_refresh(afc_host);
+                AFCManager::instance().apply_machine_filaments(*wxGetApp().preset_bundle, machine_nozzles);
             }
 
             bool need_load_preset = false;
@@ -4538,6 +4547,7 @@ void SSWCP_MachineConnect_Instance::sw_disconnect() {
 
             wxGetApp().app_config->clear_filament_extruder_map();
             wxGetApp().preset_bundle->machine_filaments.clear();
+            AFCManager::instance().clear();
             wxGetApp().load_current_presets();
         });
 
@@ -7447,6 +7457,7 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                     SSWCP_Instance::m_first_connected = true;
                                     wxGetApp().app_config->clear_filament_extruder_map();
                                     wxGetApp().preset_bundle->machine_filaments.clear();
+                                    AFCManager::instance().clear();
                                     wxGetApp().load_current_presets();
                                 });
                                 wxGetApp().CallAfter([]() {
@@ -7899,6 +7910,9 @@ std::shared_ptr<SSWCP_Instance> SSWCP::create_sswcp_instance(std::string cmd, co
         instance = std::make_shared<SSWCP_PageStateChange_Instance>(cmd, header, data, event_id, webview);
     } else if(m_mqtt_agent_cmd_list.find(cmd) != m_mqtt_agent_cmd_list.end()) {
         instance = std::make_shared<SSWCP_MqttAgent_Instance>(cmd, header, data, event_id, webview);
+    }
+    else if (SSWCP_AFC_Instance::commands().count(cmd)) {
+        instance = std::make_shared<SSWCP_AFC_Instance>(cmd, header, data, event_id, webview);
     }
     else {
         instance = std::make_shared<SSWCP_Instance>(cmd, header, data, event_id, webview);

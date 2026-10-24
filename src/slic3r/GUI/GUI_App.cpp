@@ -15,6 +15,7 @@
 #include "slic3r/GUI/WebPresetDialog.hpp"
 
 #include "slic3r/GUI/SSWCP.hpp"
+#include "slic3r/GUI/AFCManager.hpp"
 #include "slic3r/GUI/DownloadManager.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Config/Version.hpp"
@@ -499,6 +500,18 @@ public:
         memDc.DrawText(m_constant_text.version,
                        startX + brandExt.GetWidth() + gap,
                        tagY);
+
+        // AFC: a tilted "Powered by" badge with the AFC logo, centered under the version tag, kept inside the right edge.
+        // A PNG (nanosvg draws no images), drawn at 4x and scaled down smoothly.
+        wxImage afcImg;
+        if (afcImg.LoadFile(from_u8(var("splash_powered_by_afc.png")), wxBITMAP_TYPE_PNG) && afcImg.GetWidth() > 0) {
+            const int afcW = scaleX(150);
+            afcImg.Rescale(afcW, std::max(1, afcImg.GetHeight() * afcW / afcImg.GetWidth()), wxIMAGE_QUALITY_HIGH);
+            const wxBitmap afcBmp(afcImg);
+            int afcX = startX + brandExt.GetWidth() + gap + (versionExt.GetWidth() - afcBmp.GetWidth()) / 2;
+            afcX     = std::min(afcX, width - scaleX(12) - afcBmp.GetWidth());
+            memDc.DrawBitmap(afcBmp, afcX, tagY + versionExt.GetHeight() + scaleY(2), true);
+        }
 
         // Dynamic text y position (for SetText)
         m_action_line_y_position = scaleY(384);
@@ -7934,6 +7947,7 @@ bool GUI_App::sm_disconnect_current_machine(bool need_reload_printerview)
             wxGetApp().set_connect_host(nullptr);
 
             wxGetApp().preset_bundle->machine_filaments.clear();
+            AFCManager::instance().clear();
             // wxGetApp().load_current_presets();
 
         });

@@ -15,6 +15,9 @@
 #include <slic3r/GUI/Widgets/WebView.hpp>
 #include <wx/webview.h>
 #include "slic3r/GUI/SSWCP.hpp"
+#include "slic3r/GUI/AFCManager.hpp"
+#include "slic3r/GUI/HttpServer.hpp"
+#include "slic3r/Utils/PrintHost.hpp"
 #include "sentry_wrapper/SentryWrapper.hpp"
 
 namespace pt = boost::property_tree;
@@ -26,7 +29,8 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
         : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
  {
 
-    wxBoxSizer* topsizer = new wxBoxSizer(wxVERTICAL);
+    wxBoxSizer* topsizer = new wxBoxSizer(wxHORIZONTAL);
+    m_main_sizer = topsizer;
 
     wxGetApp().start_flutter_wcp_timeout_watch();
     // Load the real URL only in load_url(). Creating with Flutter here races the later
@@ -54,13 +58,27 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
     //Connect the idle events
     Bind(wxEVT_CLOSE_WINDOW, &PrinterWebView::OnClose, this);
 
+    // AFC: a slim toggle and a lane panel to the right of the device page,
+    // shown once the connected printer turns out to run AFC.
+    m_afc_toggle = new wxButton(this, wxID_ANY, _L("AFC"), wxDefaultPosition, wxSize(FromDIP(44), -1), wxBU_EXACTFIT);
+    m_afc_toggle->SetToolTip(_L("Show the AFC units and lanes"));
+    m_afc_toggle->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_afc_panel(true); });
+    m_afc_toggle->Hide();
+    topsizer->Add(m_afc_toggle, 0, wxEXPAND);
+
+    m_afc_timer.SetOwner(this);
+    Bind(wxEVT_TIMER, &PrinterWebView::OnAfcTimer, this, m_afc_timer.GetId());
+    m_afc_timer.Start(5000);
  }
 
 PrinterWebView::~PrinterWebView()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Start";
+    m_afc_timer.Stop();
     SetEvtHandlerEnabled(false);
     SSWCP::on_webview_delete(m_browser);
+    if (m_afc_browser)
+        SSWCP::on_webview_delete(m_afc_browser);
 
     wxGetApp().fltviews().remove_printer_view(this);
 
@@ -237,6 +255,65 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
     if (evt.GetURL() != m_browser->GetCurrentURL())
         return;
     SendAPIKey();
+}
+
+void PrinterWebView::OnAfcTimer(wxTimerEvent&)
+{
+    // AFC rides along with any printer page: the U1's device page or a Klipper
+    // printer's own web UI (Fluidd, Mainsail). Not the "no connection" page.
+    const std::shared_ptr<PrintHost> host = AFCManager::afc_host();
+    const wxString url         = m_browser ? m_browser->GetCurrentURL() : wxString();
+    const bool     device_page = is_u1_device_page() ||
+                             (!url.empty() && url.find("flutter_web") == wxString::npos && url.find("missing_connection") == wxString::npos);
+    if (host) {
+        // Read often while the page is in front; in the background just keep the slicer's slots current.
+        AFCManager::instance().request_refresh(host, std::chrono::seconds(IsShownOnScreen() ? 15 : 60));
+    }
+    const bool detected = host && device_page && AFCManager::instance().has_afc() &&
+                          AFCManager::instance().printer_sn() == AFCManager::host_key(host);
+    if (detected != m_afc_detected) {
+        m_afc_detected = detected;
+        update_afc_layout();
+    }
+}
+
+void PrinterWebView::ensure_afc_browser()
+{
+    if (m_afc_browser)
+        return;
+    const wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
+                                            "/web/afc/index.html?view=panel");
+    m_afc_browser = WebView::CreateWebView(this, wxGetApp().get_international_url(url));
+    if (m_afc_browser == nullptr)
+        return;
+    m_afc_browser->SetMinSize(wxSize(FromDIP(380), -1));
+    m_afc_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &PrinterWebView::OnAfcScriptMessage, this, m_afc_browser->GetId());
+    m_main_sizer->Add(m_afc_browser, 0, wxEXPAND);
+}
+
+void PrinterWebView::OnAfcScriptMessage(wxWebViewEvent& evt)
+{
+    SSWCP::handle_web_message(evt.GetString().ToUTF8().data(), m_afc_browser);
+}
+
+void PrinterWebView::show_afc_panel(bool show)
+{
+    wxGetApp().app_config->set_bool("afc_panel_visible", show);
+    update_afc_layout();
+}
+
+void PrinterWebView::update_afc_layout()
+{
+    const std::string pref    = wxGetApp().app_config->get("afc_panel_visible");
+    const bool        visible = pref.empty() || pref == "true" || pref == "1";
+    const bool        panel   = m_afc_detected && visible;
+    if (panel)
+        ensure_afc_browser();
+    if (m_afc_browser)
+        m_afc_browser->Show(panel);
+    if (m_afc_toggle)
+        m_afc_toggle->Show(m_afc_detected && !visible);
+    Layout();
 }
 
 void PrinterWebView::OnScriptMessage(wxWebViewEvent& evt) {

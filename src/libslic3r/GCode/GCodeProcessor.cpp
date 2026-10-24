@@ -7,6 +7,7 @@
 #include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/format.hpp"
 #include "GCodeProcessor.hpp"
+#include "libslic3r/AFCToolheads.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -714,6 +715,11 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
     size_t extruders_count = config.filament_diameter.values.size();
     m_result.extruders_count = extruders_count;
 
+    // AFC: slot n is written as the T number of the lane the filament sync took it from.
+    m_afc_tools = AFCProtocol::slot_tool_numbers(config.filament_afc_tool.values, extruders_count);
+    if (AFCProtocol::tool_numbers_are_slots(m_afc_tools))
+        m_afc_tools.clear();
+
     // Orca: 
     m_is_XL_printer = is_XL_printer(config);
     m_preheat_time = config.preheat_time;
@@ -860,6 +866,19 @@ void GCodeProcessor::apply_config(const DynamicPrintConfig& config)
 
     // BBS
     m_result.extruders_count = config.option<ConfigOptionFloats>("filament_diameter")->values.size();
+
+    // AFC: a G-code saved with its slots renumbered to AFC T numbers is read back by slot.
+    m_afc_slot_of.clear();
+    if (const auto *afc_tools = config.option<ConfigOptionInts>("filament_afc_tool")) {
+        const std::vector<int> tools = AFCProtocol::slot_tool_numbers(afc_tools->values, m_result.extruders_count);
+        if (!AFCProtocol::tool_numbers_are_slots(tools))
+            for (size_t slot = 0; slot < tools.size(); ++slot) {
+                if (m_afc_slot_of.size() <= size_t(tools[slot]))
+                    m_afc_slot_of.resize(size_t(tools[slot]) + 1, -1);
+                if (m_afc_slot_of[size_t(tools[slot])] < 0)
+                    m_afc_slot_of[size_t(tools[slot])] = int(slot);
+            }
+    }
 
     const ConfigOptionFloats* filament_diameters = config.option<ConfigOptionFloats>("filament_diameter");
     if (filament_diameters != nullptr) {
@@ -1199,6 +1218,8 @@ void GCodeProcessor::reset()
     m_preheat_time = 0.f;
     m_delta_temperature = 0;
     m_preheat_steps = 1;
+    m_afc_tools.clear();
+    m_afc_slot_of.clear();
 
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     m_mm3_per_mm_compare.reset();
@@ -3987,6 +4008,9 @@ void GCodeProcessor::process_T(const std::string_view command)
             if ((m_flavor != gcfRepRapFirmware && m_flavor != gcfRepRapSprinter) || new_extruder != -1)
                 BOOST_LOG_TRIVIAL(error) << "Invalid T command (" << command << ").";
         } else {
+            // AFC: a G-code saved with AFC T numbers changes to the slot each one was written for.
+            if (!m_afc_slot_of.empty())
+                new_extruder = new_extruder < m_afc_slot_of.size() && m_afc_slot_of[new_extruder] >= 0 ? unsigned(m_afc_slot_of[new_extruder]) : 255;
             unsigned char id = static_cast<unsigned char>(new_extruder);
             if (m_extruder_id != id) {
                 if (id >= m_result.extruders_count)
@@ -4185,6 +4209,8 @@ void GCodeProcessor::run_post_process()
 
         size_t m_times_cache_id{ 0 };
         size_t m_out_file_pos{ 0 };
+        // AFC: the T number each filament slot is written as, empty when slot n is T(n)
+        const std::vector<int>* m_afc_tools{ nullptr };
 
 
     public:
@@ -4195,6 +4221,8 @@ void GCodeProcessor::run_post_process()
 #else
         : m_write_type(type), m_machines(machines) {}
 #endif // NDEBUG
+
+        void set_afc_tools(const std::vector<int>& tools) { m_afc_tools = &tools; }
 
         // return: number of internal G1 lines (from G2/G3 splitting) processed
         unsigned int update(const std::string& line, size_t lines_counter, size_t g1_lines_counter) {
@@ -4349,6 +4377,8 @@ void GCodeProcessor::run_post_process()
             }
 
             {
+                if (m_afc_tools != nullptr && !m_afc_tools->empty())
+                    AFCProtocol::renumber_tools(out_string, *m_afc_tools);
                 write_to_file(out, out_string, result, out_path);
                 update_lines_ends_and_out_file_pos(out_string, result.lines_ends, &m_out_file_pos);
             }
@@ -4368,6 +4398,8 @@ void GCodeProcessor::run_post_process()
 #endif // NDEBUG
 
             {
+                if (m_afc_tools != nullptr && !m_afc_tools->empty())
+                    AFCProtocol::renumber_tools(out_string, *m_afc_tools);
                 write_to_file(out, out_string, result, out_path);
                 update_lines_ends_and_out_file_pos(out_string, result.lines_ends, &m_out_file_pos);
             }
@@ -4403,6 +4435,7 @@ void GCodeProcessor::run_post_process()
 
     ExportLines export_lines(m_result.backtrace_enabled ? ExportLines::EWriteType::ByTime : ExportLines::EWriteType::BySize,
         m_time_processor.machines);
+    export_lines.set_afc_tools(m_afc_tools);
 
     // replace placeholder lines with the proper final value
     // gcode_line is in/out parameter, to reduce expensive memory allocation

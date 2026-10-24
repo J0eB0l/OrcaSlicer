@@ -2266,7 +2266,9 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     }
 
     //Orca: disable purge_in_prime_tower if single_extruder_multi_material is disabled
-    if (opt_key == "single_extruder_multi_material" && m_config->opt_bool("single_extruder_multi_material") == false){
+    // AFC: except on Klipper, where it flushes AFC lane changes on a multi-toolhead printer on the tower.
+    if (opt_key == "single_extruder_multi_material" && m_config->opt_bool("single_extruder_multi_material") == false &&
+        m_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value != gcfKlipper){
         DynamicPrintConfig new_conf = *m_config;
         new_conf.set_key_value("purge_in_prime_tower", new ConfigOptionBool(false));
         m_config_manipulation.apply(m_config, &new_conf);
@@ -2779,11 +2781,11 @@ void TabPrint::build()
         optgroup->append_single_option_line("detect_thin_wall", "strength_settings_walls#detect-thin-wall");
 
         optgroup = page->new_optgroup(L("Top/bottom shells"), L"param_shell");
-        optgroup->append_single_option_line("top_surface_pattern", "fill-patterns#Infill of the top surface and bottom surface");
+        optgroup->append_single_option_line("top_surface_pattern", "strength_settings_top_bottom_shells#surface-pattern");
         optgroup->append_single_option_line("top_shell_layers");
         optgroup->append_single_option_line("top_shell_thickness");
         optgroup->append_single_option_line("top_color_penetration_layers");
-        optgroup->append_single_option_line("bottom_surface_pattern", "fill-patterns#Infill of the top surface and bottom surface");
+        optgroup->append_single_option_line("bottom_surface_pattern", "strength_settings_top_bottom_shells#surface-pattern");
         optgroup->append_single_option_line("bottom_shell_layers");
         optgroup->append_single_option_line("bottom_shell_thickness");
         optgroup->append_single_option_line("bottom_color_penetration_layers");
@@ -4184,17 +4186,16 @@ void TabFilament::build()
         optgroup->append_single_option_line("pressure_advance", "pressure-advance-calib");
 
         // Orca: adaptive pressure advance and calibration model
-        // Snapmaker: hidden from UI per product requirement; config and slicing logic are kept
-        // optgroup->append_single_option_line("adaptive_pressure_advance", "adaptive-pressure-advance-calib");
-        // optgroup->append_single_option_line("adaptive_pressure_advance_overhangs", "adaptive-pressure-advance-calib");
-        // optgroup->append_single_option_line("adaptive_pressure_advance_bridges", "adaptive-pressure-advance-calib");
-        //
-        // Option option = optgroup->get_option("adaptive_pressure_advance_model");
-        // option.opt.full_width = true;
-        // option.opt.is_code = true;
-        // option.opt.height = 15;
-        // optgroup->append_single_option_line(option);
-        //
+        optgroup->append_single_option_line("adaptive_pressure_advance", "adaptive-pressure-advance-calib");
+        optgroup->append_single_option_line("adaptive_pressure_advance_overhangs", "adaptive-pressure-advance-calib");
+        optgroup->append_single_option_line("adaptive_pressure_advance_bridges", "adaptive-pressure-advance-calib");
+
+        Option option = optgroup->get_option("adaptive_pressure_advance_model");
+        option.opt.full_width = true;
+        option.opt.is_code = true;
+        option.opt.height = 15;
+        optgroup->append_single_option_line(option);
+
 
         optgroup = page->new_optgroup(L("Print chamber temperature"), L"param_chamber_temp");
         optgroup->append_single_option_line("chamber_temperature", "chamber-temperature");
@@ -4367,7 +4368,7 @@ void TabFilament::build()
             validate_custom_gcode_cb(this, optgroup_title, opt_key, value);
         };
         optgroup->edit_custom_gcode = edit_custom_gcode_fn;
-        Option option = optgroup->get_option("filament_start_gcode");
+        option = optgroup->get_option("filament_start_gcode");
         option.opt.full_width = true;
         option.opt.is_code = true;
         option.opt.height = gcode_field_height;// 150;
@@ -4604,13 +4605,12 @@ void TabFilament::toggle_options()
         // Orca: adaptive pressure advance and calibration model
         // If PA is not enabled, disable adaptive pressure advance and hide the model section
         // If adaptive PA is not enabled, hide the adaptive PA model section
-        // Snapmaker: hidden from UI per product requirement; toggle logic disabled along with the UI lines
-        // toggle_option("adaptive_pressure_advance", pa);
-        // toggle_option("adaptive_pressure_advance_overhangs", pa);
-        // bool has_adaptive_pa = m_config->opt_bool("adaptive_pressure_advance", 0);
-        // toggle_line("adaptive_pressure_advance_overhangs", has_adaptive_pa && pa);
-        // toggle_line("adaptive_pressure_advance_model", has_adaptive_pa && pa);
-        // toggle_line("adaptive_pressure_advance_bridges", has_adaptive_pa && pa);
+        toggle_option("adaptive_pressure_advance", pa);
+        toggle_option("adaptive_pressure_advance_overhangs", pa);
+        bool has_adaptive_pa = m_config->opt_bool("adaptive_pressure_advance", 0);
+        toggle_line("adaptive_pressure_advance_overhangs", has_adaptive_pa && pa);
+        toggle_line("adaptive_pressure_advance_model", has_adaptive_pa && pa);
+        toggle_line("adaptive_pressure_advance_bridges", has_adaptive_pa && pa);
 
         bool is_pellet_printer = cfg.opt_bool("pellet_modded_printer");
         toggle_line("pellet_flow_coefficient", is_pellet_printer);
@@ -5566,7 +5566,9 @@ void TabPrinter::toggle_options()
         }
         toggle_option("extruders_count", !bSEMM);
         toggle_option("manual_filament_change", bSEMM);
-        toggle_option("purge_in_prime_tower", bSEMM && !is_BBL_printer);
+        // AFC: on a multi-toolhead Klipper printer it flushes AFC lane changes on the tower.
+        const bool is_klipper = m_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value == gcfKlipper;
+        toggle_option("purge_in_prime_tower", (bSEMM || is_klipper) && !is_BBL_printer);
     }
     wxString extruder_number;
     long val = 1;
@@ -6118,8 +6120,12 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
         if (current_dirty)
             m_presets->discard_current_changes();
 
+        const std::string old_printer = m_type == Preset::TYPE_PRINTER ? m_presets->get_selected_preset_name() : std::string();
         const bool is_selected = m_presets->select_preset_by_name(preset_name, false) || delete_current;
         assert(m_presets->get_edited_preset().name == preset_name || ! is_selected);
+        // AFC: the toolheads and T numbers synced from one printer's AFC lanes do not hold on another printer.
+        if (m_type == Preset::TYPE_PRINTER && m_presets->get_selected_preset_name() != old_printer)
+            m_preset_bundle->clear_filament_toolheads();
         // Mark the print & filament enabled if they are compatible with the currently selected preset.
         // The following method should not discard changes of current print or filament presets on change of a printer profile,
         // if they are compatible with the current printer.

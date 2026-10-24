@@ -396,9 +396,8 @@ std::vector<FilamentData> SyncFilamentColorDialog::getSyncDataList() const
     if (!m_pFilamentColorMapBoxGroup)
         return dataList;
 
-    if (!m_bMappingMode) {
-        return collectVisibleOverwriteMachineFilaments(m_machineDataList, m_designDataList.size());
-    }
+    if (!m_bMappingMode)
+        return overwriteFilaments();
 
     dataList = m_pFilamentColorMapBoxGroup->getCurFilamentList();
 
@@ -423,6 +422,25 @@ void SyncFilamentColorDialog::setOverwriteMode()
     if (m_pModeToggle)
         m_pModeToggle->setSelected(g_modeOverwrite);
     onModeChanged(g_modeOverwrite);
+}
+
+void SyncFilamentColorDialog::setAfcLanes(std::vector<int> designTools)
+{
+    m_bAfcLanes   = true;
+    m_designTools = std::move(designTools);
+    if (!m_bMappingMode)
+        onCoverMatch();
+}
+
+std::vector<FilamentData> SyncFilamentColorDialog::overwriteFilaments() const
+{
+    if (!m_bAfcLanes)
+        return collectVisibleOverwriteMachineFilaments(m_machineDataList, m_designDataList.size());
+    std::vector<FilamentData> loaded;
+    for (const FilamentData& data : m_machineDataList)
+        if (!is_none_filament(data))
+            loaded.push_back(data);
+    return loaded;
 }
 
 bool SyncFilamentColorDialog::isAddUnUsedMachineFilaments() const
@@ -527,7 +545,7 @@ void SyncFilamentColorDialog::onCoverMatch()
     }
 
     // 1:1 positional mapping for UI display (includes NONE slots)
-    for (size_t i = 0; i < designCount; ++i) {
+    for (size_t i = 0; i < designCount && !m_bAfcLanes; ++i) {
         size_t m_idx = i % machineCount;
         auto it = m_machineDataList.begin();
         std::advance(it, m_idx);
@@ -536,8 +554,27 @@ void SyncFilamentColorDialog::onCoverMatch()
     m_pFilamentColorMapBoxGroup->setGroupBoxEnable(false, FilamentColorMapBox::ButtonType::Below);
 
     // Build 1-based filament ID remap for overwrite mode.
-    // Cycle through non-NONE machine filaments only.
-    {
+    if (m_bAfcLanes) {
+        // AFC: a slot moves to the new slot of its lane, so objects keep their lanes when the
+        // empty ones drop out; a slot whose lane is empty now takes the loaded lanes in turn.
+        const std::vector<FilamentData> loaded = overwriteFilaments();
+        if (loaded.empty()) {
+            m_filamentIdRemap.clear();
+            return;
+        }
+        m_filamentIdRemap.assign(designCount + 1, 0);
+        size_t laneless = 0;
+        for (size_t old_id = 1; old_id <= designCount; ++old_id) {
+            const int tool = old_id - 1 < m_designTools.size() ? m_designTools[old_id - 1] : static_cast<int>(old_id - 1);
+            auto lane = std::find_if(loaded.begin(), loaded.end(), [tool](const FilamentData& data) {
+                return static_cast<int>(data.m_index) == tool;
+            });
+            const size_t pos = lane != loaded.end() ? static_cast<size_t>(lane - loaded.begin()) : laneless++ % loaded.size();
+            m_filamentIdRemap[old_id] = static_cast<unsigned int>(pos + 1);
+            m_pFilamentColorMapBoxGroup->updateBoxBelowData(static_cast<int>(old_id - 1), loaded[pos], false);
+        }
+    } else {
+        // Cycle through non-NONE machine filaments only.
         std::vector<size_t> validPos;
         for (size_t j = 0; j < visibleCount; ++j) {
             if (!is_none_filament(m_machineDataList[j]))
@@ -625,7 +662,7 @@ void SyncFilamentColorDialog::loadCoverPreview()
 
     std::vector<FilamentData> filamentMapping;
     if (!m_bMappingMode) {
-        filamentMapping = collectVisibleOverwriteMachineFilaments(m_machineDataList, m_designDataList.size());
+        filamentMapping = overwriteFilaments();
     } else if (m_pFilamentColorMapBoxGroup) {
         filamentMapping = m_pFilamentColorMapBoxGroup->getCurFilamentList();
     }

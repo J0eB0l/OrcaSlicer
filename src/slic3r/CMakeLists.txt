@@ -566,6 +566,14 @@ set(SLIC3R_GUI_SOURCES
     GUI/SMPhysicalPrinterDialog.cpp
     GUI/SSWCP.cpp
     GUI/SSWCP.hpp
+    GUI/AFCManager.cpp
+    GUI/AFCManager.hpp
+    GUI/AFCWebBridge.cpp
+    GUI/AFCWebBridge.hpp
+    GUI/AFCPrintDialog.cpp
+    GUI/AFCPrintDialog.hpp
+    GUI/AFCCloudUpload.cpp
+    GUI/AFCCloudUpload.hpp
     GUI/WebSocketDebugServer.cpp
     GUI/WebSocketDebugServer.hpp
     GUI/DownloadManager.cpp
@@ -672,6 +680,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/MQTT.cpp
     Utils/MoonRaker.cpp
     Utils/MoonRaker.hpp
+    Utils/FlutterWebPatch.cpp
+    Utils/FlutterWebPatch.hpp
     Utils/TimeSyncManager.cpp
     Utils/TimeSyncManager.hpp
     Utils/TimeoutMap.hpp

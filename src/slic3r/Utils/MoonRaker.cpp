@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <sstream>
 #include <exception>
+#include <thread>
 #include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -383,6 +384,80 @@ bool Moonraker::send_gcodes(const std::vector<std::string>& codes, std::string& 
         .perform_sync();
 
     return res;
+}
+
+void Moonraker::async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback)
+{
+    // The calls the AFC integration makes map onto Moonraker's REST routes;
+    // anything else goes through Moonraker's /server/jsonrpc.
+    const json  p    = params.is_object() ? params : json::object();
+    std::string path;
+    std::string body;
+    bool        post = true;
+    if (method == "printer.afc.status") {
+        path = "printer/afc/status";
+        post = false;
+    } else if (method == "printer.objects.list") {
+        path = "printer/objects/list";
+        post = false;
+    } else if (method == "printer.objects.query") {
+        path = "printer/objects/query";
+        body = json{{"objects", p.value("objects", json::object())}}.dump();
+    } else if (method == "printer.gcode.script") {
+        path = "printer/gcode/script";
+        body = json{{"script", p.value("script", std::string())}}.dump();
+    } else if (method == "server.database.get_item") {
+        path = "server/database/item?namespace=" + Http::url_encode(p.value("namespace", std::string()));
+        if (p.contains("key") && p["key"].is_string())
+            path += "&key=" + Http::url_encode(p["key"].get<std::string>());
+        post = false;
+    } else {
+        path = "server/jsonrpc";
+        body = json{{"jsonrpc", "2.0"}, {"method", method}, {"params", p}, {"id", 1}}.dump();
+    }
+
+    auto http = post ? Http::post(make_url(path)) : Http::get(make_url(path));
+    set_auth(http);
+    if (post) {
+        http.header("Content-Type", "application/json");
+        http.set_post_body(body);
+    }
+    // Moonraker answers a G-code script only once Klipper has run it, and an AFC lane
+    // load can take minutes.
+    http.timeout_connect(5)
+        .timeout_max(method == "printer.gcode.script" ? 15 * 60 : 30)
+        .on_complete([callback, method](std::string body, unsigned) {
+            if (!callback)
+                return;
+            json res;
+            try {
+                res = json::parse(body);
+            } catch (const std::exception&) {
+                callback(json{{"error", "unreadable reply to " + method}});
+                return;
+            }
+            if (res.is_object() && res.contains("result"))
+                callback(json{{"data", res["result"]}});
+            else if (res.is_object() && res.contains("error"))
+                callback(json{{"error", res["error"]}});
+            else
+                callback(json{{"data", res}});
+        })
+        .on_error([callback, method](std::string body, std::string error, unsigned status) {
+            BOOST_LOG_TRIVIAL(warning) << "[Moonraker] " << method << " failed, HTTP status " << status << ": " << error;
+            if (!callback)
+                return;
+            // Moonraker puts Klipper's own message (e.g. "Must home axis first") in error.message.
+            std::string message = error;
+            try {
+                const json res = json::parse(body);
+                if (res.is_object() && res.contains("error") && res["error"].is_object() && res["error"].contains("message") &&
+                    res["error"]["message"].is_string())
+                    message = res["error"]["message"].get<std::string>();
+            } catch (const std::exception&) {}
+            callback(json{{"error", message}, {"status", status}});
+        })
+        .perform();
 }
 
 bool Moonraker::test(wxString& msg) const
@@ -1708,6 +1783,33 @@ void Moonraker_Mqtt::async_send_gcodes(const std::vector<std::string>& scripts, 
     }
 }
 
+// Generic JSON-RPC call over the MQTT bridge, used by the AFC integration
+// (printer.afc.status, printer.objects.*, server.database.get_item).
+void Moonraker_Mqtt::async_jsonrpc_call(const std::string& method, const nlohmann::json& params, std::function<void(const nlohmann::json&)> callback)
+{
+    BOOST_LOG_TRIVIAL(info) << "[Moonraker_Mqtt] JSON-RPC call: " << method;
+    // Callers chain their next request from the answer, so no answer may run where a
+    // request cannot be sent. Replies arrive on Paho's receive thread with the library
+    // lock held: a publish from there waits 3 s for that lock, marks the client
+    // disconnected and then blocks the receive thread for good, so the U1 stops
+    // answering and cannot be disconnected or switched. Timeouts fire with the request
+    // map locked, which a new request locks again. So every answer gets its own thread.
+    auto answer = [callback](const json& res) {
+        if (callback)
+            std::thread([callback, res]() { callback(res); }).detach();
+    };
+    // Moonraker answers a G-code script only once Klipper has run it, and an AFC lane
+    // load can take minutes.
+    const std::chrono::milliseconds timeout(method == "printer.gcode.script" ? 15 * 60 * 1000 : 80000);
+    if (!send_to_request(method, params.is_null() ? json::object() : params, true, answer, [answer, method]() {
+            BOOST_LOG_TRIVIAL(warning) << "[Moonraker_Mqtt] JSON-RPC call timed out: " << method;
+            answer(json{{"error", "timeout"}});
+        }, timeout)) {
+        BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to send JSON-RPC call: " << method;
+        answer(json{{"error", "send failed"}});
+    }
+}
+
 // Unsubscribe from printer status updates
 void Moonraker_Mqtt::async_unsubscribe_machine_info(const std::string& hash, std::function<void(const nlohmann::json&)> callback)
 {
@@ -2760,7 +2862,8 @@ bool Moonraker_Mqtt::send_to_request(
     const json& params,
     bool need_response,
     std::function<void(const nlohmann::json& response)> callback,
-    std::function<void()> timeout_callback)
+    std::function<void()> timeout_callback,
+    std::chrono::milliseconds timeout)
 {
     auto& wcp_loger = GUI::WCP_Logger::getInstance();
     wcp_loger.add_log("sending request, method: " + method + ", need response: " + std::to_string(need_response), false, "", "Moonraker_Mqtt", "info");
@@ -2779,7 +2882,7 @@ bool Moonraker_Mqtt::send_to_request(
     wcp_loger.add_log("generated seq id: " + std::to_string(seq_id), false, "", "Moonraker_Mqtt", "info");
 
     if (need_response) {
-        if (!add_response_target(seq_id, callback, timeout_callback)) {
+        if (!add_response_target(seq_id, callback, timeout_callback, false, timeout)) {
             BOOST_LOG_TRIVIAL(error) << "[Moonraker_Mqtt] failed to add response target";
             wcp_loger.add_log("failed to add response target", false, "", "Moonraker_Mqtt", "error");
             return false;

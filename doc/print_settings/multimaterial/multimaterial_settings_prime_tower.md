@@ -12,6 +12,14 @@ Width of the prime tower.
 
 Width of the brim around the prime tower.
 
+## Brim chamfer
+
+Reduces the brim around the prime tower gradually, layer by layer. This gives it a chamfered, tapered shape, using less material while keeping first layer adhesion.
+
+### Brim chamfer max width
+
+**Max chamfer width**: the width of the chamfer zone, measured from the tower perimeter. The brim shrinks within this distance. Larger values make a more gradual taper but take more layers to finish.
+
 ## Wipe Tower Rotation Angle
 
 Wipe tower rotation angle with respect to x-axis.
@@ -67,6 +75,10 @@ Width of the rib wall.
 #### Fillet wall
 
 The wall of prime tower will fillet.
+
+## Wall gap
+
+Leaves small gaps in the outer wall of the prime tower where tool changes enter it. The first extrusion after a filament change goes in through the gap, so the filament blob is left on the gap's edge instead of on the outer wall surface.
 
 ## No sparse layers
 

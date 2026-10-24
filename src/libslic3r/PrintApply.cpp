@@ -1,6 +1,7 @@
 #include "MixedFilament.hpp"
 #include "Model.hpp"
 #include "Print.hpp"
+#include "AFCProtocol.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <algorithm>
@@ -1324,6 +1325,17 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         }
 
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", has_scarf_joint_seam:" << has_scarf_joint_seam;
+    }
+
+    // AFC: a synced slot prints with its spool's pressure advance (calibration prints set their own).
+    if (m_calib_params.mode == CalibMode::Calib_None) {
+        const auto *spool = new_full_config.option<ConfigOptionFloats>("spool_pressure_advance");
+        auto       *pa     = new_full_config.option<ConfigOptionFloats>("pressure_advance");
+        auto       *enable = new_full_config.option<ConfigOptionBools>("enable_pressure_advance");
+        const auto *steps  = new_full_config.option<ConfigOptionInts>("filament_flow_step_size");
+        if (spool && pa && enable)
+            AFCProtocol::apply_spool_pressure_advance(spool->values, steps ? steps->values : std::vector<int>(), pa->values,
+                                                      enable->values);
     }
 
     // Find modified keys of the various configs. Resolve overrides extruder retract values by filament profiles.

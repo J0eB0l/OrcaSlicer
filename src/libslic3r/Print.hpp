@@ -960,6 +960,9 @@ public:
 
     // Wipe tower support.
     bool                        has_wipe_tower() const;
+    // AFC: a lane change on a multi-toolhead Klipper printer flushes on the prime tower ("Purge in prime tower")
+    // instead of in AFC's poop. Only takes effect for slots with a known filament_toolhead.
+    bool                        afc_lane_flush_on_tower() const;
     const WipeTowerData&        wipe_tower_data(size_t filaments_cnt = 0) const;
     const ToolOrdering& 		tool_ordering() const { return m_tool_ordering; }
 
